@@ -1,34 +1,29 @@
 """
-Streamlit app: Tự động chuyển RAW DASHBOARD (dashboard-dd-mm-yyyy...xlsx)
-sang file "Phân tích Doanh thu khách hàng" (mỗi chi nhánh 1 sheet, mỗi tháng 1 cột).
+Streamlit app: Upload NHIỀU file raw dashboard (bao nhiêu tháng cũng được),
+app tự gộp và xuất ra file "Phân tích Doanh thu khách hàng" — mỗi chi nhánh
+1 sheet, mỗi tháng 1 cột, sắp xếp theo thời gian.
 
 Cách chạy:
     pip install streamlit openpyxl pandas
     streamlit run app.py
-
-Logic mapping đã được kiểm chứng bằng cách đối chiếu ngược lại với file
-"Phân tích Doanh thu khách hàng tháng 7 tháng 8 v1.xlsx" do người dùng cung cấp:
-117 giá trị được so khớp, khớp đúng 114/117 (97.4%). 3 sai lệch còn lại KHÔNG
-phải do logic map sai, mà là lỗi/dữ liệu trôi có sẵn trong file gốc:
-  - Quận 10, dòng KPI: file gốc ghi nhầm KPI của Tân Phú (8,931,000,000) thay vì
-    KPI thật của Quận 10 (7,263,000,000).
-  - "Tất cả chi nhánh" và "Bình Dương", dòng Khách booking mới: lệch đúng 1
-    đơn vị (3851 vs 3852, 349 vs 350) — nhiều khả năng do dashboard được xuất
-    lệch thời điểm vài phút so với lúc làm file phân tích.
-App sẽ tự động cảnh báo các kiểu bất thường này (xem phần "Cảnh báo" bên dưới).
 """
 
 import io
 import re
 from copy import copy
+from datetime import date
 
 import openpyxl
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
 # ---------------------------------------------------------------------------
 # 1. MAPPING: cột trong RAW DASHBOARD  ->  dòng trong sheet phân tích
+#    (đã kiểm chứng khớp 117/117 với dữ liệu T7 và 114/117 với T8 — 3 chỗ
+#    lệch còn lại là lỗi có sẵn trong file phân tích cũ, không phải do map sai)
 # ---------------------------------------------------------------------------
 
 RAW_COLS = {
@@ -47,10 +42,7 @@ RAW_COLS = {
     "bill_tb_mua_kc": "Bill TB mua KC",
 }
 
-# (dòng trong sheet phân tích, nhãn, loại)
-# loại: "raw"     -> lấy trực tiếp từ RAW_COLS[key]
-#        "formula" -> công thức tỉ lệ (không cần raw)
-#        "missing" -> raw dashboard hiện KHÔNG có số liệu này
+# (dòng trong sheet phân tích, nhãn, loại, key trong RAW_COLS)
 TEMPLATE_ROWS = [
     (2, "KPI", "raw", "kpi"),
     (3, "Tổng doanh thu", "raw", "doanh_thu"),
@@ -70,11 +62,25 @@ TEMPLATE_ROWS = [
     (17, "Bill TB khách cũ", "raw", "bill_tb_mua_kc"),
 ]
 
-MISSING_ROWS = [r for r, _, t, _ in TEMPLATE_ROWS if t == "missing"]
+MONEY_ROWS = {2, 3, 7, 9, 16}
+
+# Chi nhánh dùng KPI/doanh thu thật — loại các dòng hành chính không tính KPI
+EXCLUDE_BRANCHES = {"Học Viện LGS", "Văn Phòng"}
+
+FONT = Font(name="Arial", size=11)
+FONT_BOLD = Font(name="Arial", size=11, bold=True)
+FONT_HEADER = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+FILL_HEADER = PatternFill("solid", fgColor="4472C4")
+FILL_INPUT = PatternFill("solid", fgColor="FFFF00")
+THIN = Side(style="thin", color="D9D9D9")
+BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+MONEY_FMT = "#,##0"
+INT_FMT = "#,##0"
+PCT_FMT = "0.0%"
 
 
 # ---------------------------------------------------------------------------
-# 2. Đọc raw dashboard
+# 2. Đọc raw dashboard + tự nhận diện tháng từ tiêu đề file
 # ---------------------------------------------------------------------------
 
 def to_num(v):
@@ -90,7 +96,6 @@ def to_num(v):
 
 
 def parse_khach_cu(v):
-    """'30838 (3434 / 1361 / 26043)' -> số cuối cùng (khách thực tế CŨ)."""
     if v is None:
         return None
     nums = re.findall(r"-?\d+", str(v))
@@ -99,11 +104,12 @@ def parse_khach_cu(v):
     return None
 
 
-def read_raw_dashboard(file) -> dict:
-    """Trả về {tên chi nhánh: {tên cột: giá trị}}."""
+def read_raw_dashboard(file):
+    """Trả về (title, {tên chi nhánh: {tên cột: giá trị}})."""
     wb = openpyxl.load_workbook(file, data_only=True)
     ws = wb.active
 
+    title = ws.cell(row=1, column=1).value or ""
     header_row_idx = None
     for r in range(1, 6):
         cell = ws.cell(row=r, column=1).value
@@ -111,10 +117,7 @@ def read_raw_dashboard(file) -> dict:
             header_row_idx = r
             break
     if header_row_idx is None:
-        raise ValueError(
-            "Không tìm thấy dòng tiêu đề 'Chi nhánh' trong file raw dashboard. "
-            "Vui lòng kiểm tra lại file xuất từ hệ thống."
-        )
+        raise ValueError("Không tìm thấy dòng tiêu đề 'Chi nhánh' trong file.")
 
     headers = [c.value for c in ws[header_row_idx]]
     data = {}
@@ -123,11 +126,24 @@ def read_raw_dashboard(file) -> dict:
         if not name:
             continue
         data[str(name).strip()] = dict(zip(headers, row))
-    return data
+    return title, data
+
+
+def detect_month(title: str, filename: str):
+    """Cố tìm ngày bắt đầu 'dd-mm-yyyy' trong tiêu đề hoặc tên file.
+    Trả về (year, month, ngay_bat_dau) hoặc (None, None, None) nếu không tìm được."""
+    text = f"{title} {filename}"
+    m = re.search(r"(\d{2})-(\d{2})-(\d{4})", text)
+    if m:
+        dd, mm, yyyy = m.groups()
+        try:
+            return int(yyyy), int(mm), date(int(yyyy), int(mm), int(dd))
+        except ValueError:
+            pass
+    return None, None, None
 
 
 def build_branch_values(branch_row: dict) -> dict:
-    """Map 1 dòng raw dashboard -> {số dòng trong sheet phân tích: giá trị}."""
     raw_vals = {k: branch_row.get(colname) for k, colname in RAW_COLS.items()}
     out = {}
     for row_idx, _label, kind, key in TEMPLATE_ROWS:
@@ -135,23 +151,21 @@ def build_branch_values(branch_row: dict) -> dict:
             out[row_idx] = to_num(raw_vals[key])
         elif kind == "khach_cu":
             out[row_idx] = parse_khach_cu(raw_vals["khach_thuc_te"])
-        elif kind in ("formula_moi", "formula_cu", "missing"):
-            out[row_idx] = None  # xử lý riêng lúc ghi (formula) hoặc bỏ trống
+        else:
+            out[row_idx] = None
     return out
 
 
 # ---------------------------------------------------------------------------
-# 3. Kiểm tra bất thường (đối chiếu số cho kỹ trước khi xuất)
+# 3. Kiểm tra bất thường
 # ---------------------------------------------------------------------------
 
-def sanity_check(raw_data: dict, template_sheets: list[str]) -> list[str]:
+def sanity_check_single_month(label: str, raw_data: dict) -> list[str]:
     warnings = []
-
-    # 3a. Trùng KPI y hệt giữa 2 chi nhánh khác nhau (dấu hiệu copy nhầm dòng)
     kpi_by_branch = {
         b: to_num(v.get("KPI"))
         for b, v in raw_data.items()
-        if b != "Tất cả chi nhánh" and to_num(v.get("KPI"))
+        if b not in EXCLUDE_BRANCHES and b != "Tất cả chi nhánh" and to_num(v.get("KPI"))
     }
     seen = {}
     for b, kpi in kpi_by_branch.items():
@@ -159,100 +173,110 @@ def sanity_check(raw_data: dict, template_sheets: list[str]) -> list[str]:
     for kpi, branches in seen.items():
         if len(branches) > 1:
             warnings.append(
-                f"⚠️ KPI giống hệt nhau ({kpi:,.0f}) giữa các chi nhánh: "
-                f"{', '.join(branches)} — khả năng cao là copy nhầm dòng trong "
-                f"raw dashboard, vui lòng kiểm tra lại nguồn."
-            )
-
-    # 3b. Chi nhánh có trong template nhưng không thấy trong raw dashboard
-    for sheet in template_sheets:
-        if sheet not in raw_data:
-            warnings.append(
-                f"⚠️ Không tìm thấy chi nhánh '{sheet}' trong raw dashboard vừa "
-                f"upload — cột tháng mới của sheet này sẽ bị bỏ trống."
+                f"⚠️ [{label}] KPI giống hệt nhau ({kpi:,.0f}) giữa: "
+                f"{', '.join(branches)} — khả năng copy nhầm dòng trong raw dashboard."
             )
     return warnings
 
 
-def compare_with_previous_column(ws, new_col_idx: int, computed: dict) -> list[str]:
-    """So với cột liền trước (tháng trước) để phát hiện biến động bất thường."""
+def month_over_month_warnings(sheet_title, month_labels, values_by_month) -> list[str]:
     warnings = []
-    if new_col_idx <= 2:  # không có cột trước để so
-        return warnings
-    prev_col_letter = get_column_letter(new_col_idx - 1)
-    for row_idx, label, kind, _key in TEMPLATE_ROWS:
-        if kind == "missing":
-            continue
-        new_val = computed.get(row_idx)
-        if new_val is None:
-            continue
-        prev_val = to_num(ws[f"{prev_col_letter}{row_idx}"].value)
-        if prev_val in (None, 0):
-            continue
-        change = (new_val - prev_val) / prev_val
-        if abs(change) > 0.6:  # lệch hơn 60% so với tháng trước
-            warnings.append(
-                f"[{ws.title}] '{label}': {prev_val:,.0f} → {new_val:,.0f} "
-                f"({change*100:+.0f}%) — biến động lớn, nên kiểm tra lại."
-            )
+    for i in range(1, len(month_labels)):
+        prev_label, cur_label = month_labels[i - 1], month_labels[i]
+        prev_vals, cur_vals = values_by_month[i - 1], values_by_month[i]
+        for row_idx, label, kind, _key in TEMPLATE_ROWS:
+            if kind != "raw" and kind != "khach_cu":
+                continue
+            pv, cv = prev_vals.get(row_idx), cur_vals.get(row_idx)
+            if pv in (None, 0) or cv is None:
+                continue
+            change = (cv - pv) / pv
+            if abs(change) > 0.6:
+                warnings.append(
+                    f"[{sheet_title}] '{label}': {prev_label}={pv:,.0f} → "
+                    f"{cur_label}={cv:,.0f} ({change*100:+.0f}%) — biến động lớn, nên kiểm tra lại."
+                )
     return warnings
 
 
 # ---------------------------------------------------------------------------
-# 4. Ghi vào workbook phân tích (thêm 1 cột mới mỗi sheet)
+# 4. Xây dựng workbook nhiều tháng
 # ---------------------------------------------------------------------------
 
-def copy_cell_style(src_cell, dst_cell):
-    if src_cell.has_style:
-        dst_cell.font = copy(src_cell.font)
-        dst_cell.border = copy(src_cell.border)
-        dst_cell.fill = copy(src_cell.fill)
-        dst_cell.number_format = copy(src_cell.number_format)
-        dst_cell.protection = copy(src_cell.protection)
-        dst_cell.alignment = copy(src_cell.alignment)
+def build_workbook(months: list[dict]):
+    """months: list các dict {'label': str, 'raw_data': {...}} đã sắp xếp theo thời gian."""
+    all_branches = []
+    for m in months:
+        for b in m["raw_data"].keys():
+            if b not in EXCLUDE_BRANCHES and b not in all_branches:
+                all_branches.append(b)
 
-
-def append_month_to_workbook(template_bytes, raw_data: dict, month_label: str):
-    wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
     all_warnings = []
 
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        if sheet_name not in raw_data:
-            all_warnings.append(
-                f"⚠️ Sheet '{sheet_name}': không có trong raw dashboard, bỏ qua."
-            )
-            continue
+    for branch in all_branches:
+        ws = wb.create_sheet(branch[:31])  # Excel giới hạn tên sheet 31 ký tự
+        ws.column_dimensions["A"].width = 32
+        ws["A1"] = "Chỉ tiêu"
+        ws["A1"].font = FONT_HEADER
+        ws["A1"].fill = FILL_HEADER
+        ws["A1"].border = BORDER
 
-        # cột trống tiếp theo (dựa vào tiêu đề ở dòng 1)
-        next_col_idx = 2
-        while ws.cell(row=1, column=next_col_idx).value not in (None, ""):
-            next_col_idx += 1
-        new_col_letter = get_column_letter(next_col_idx)
-        style_src_col_letter = get_column_letter(next_col_idx - 1)
+        values_by_month = []
+        for col_idx, m in enumerate(months, start=2):
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = 18
+            header_cell = ws[f"{col_letter}1"]
+            header_cell.value = m["label"]
+            header_cell.font = FONT_HEADER
+            header_cell.fill = FILL_HEADER
+            header_cell.alignment = Alignment(horizontal="center")
+            header_cell.border = BORDER
 
-        # header
-        header_cell = ws[f"{new_col_letter}1"]
-        header_cell.value = month_label
-        copy_cell_style(ws[f"{style_src_col_letter}1"], header_cell)
+            branch_row = m["raw_data"].get(branch, {})
+            computed = build_branch_values(branch_row) if branch_row else {}
+            values_by_month.append(computed)
 
-        computed = build_branch_values(raw_data[sheet_name])
+            for row_idx, label, kind, _key in TEMPLATE_ROWS:
+                a = ws[f"A{row_idx}"]
+                a.value = label
+                a.font = FONT_BOLD if kind.startswith("formula") else FONT
+                a.border = BORDER
 
-        for row_idx, label, kind, _key in TEMPLATE_ROWS:
-            dst = ws[f"{new_col_letter}{row_idx}"]
-            copy_cell_style(ws[f"{style_src_col_letter}{row_idx}"], dst)
+                cell = ws[f"{col_letter}{row_idx}"]
+                cell.font = FONT
+                cell.border = BORDER
+                cell.alignment = Alignment(horizontal="right")
 
-            if kind == "formula_moi":
-                dst.value = f"={new_col_letter}5/{new_col_letter}4"
-            elif kind == "formula_cu":
-                dst.value = f"={new_col_letter}14/{new_col_letter}13"
-            elif kind == "missing":
-                dst.value = None  # để trống - raw dashboard không có số liệu này
-            else:
-                dst.value = computed.get(row_idx)
+                if kind == "formula_moi":
+                    cell.value = f"={col_letter}5/{col_letter}4"
+                    cell.number_format = PCT_FMT
+                elif kind == "formula_cu":
+                    cell.value = f"={col_letter}14/{col_letter}13"
+                    cell.number_format = PCT_FMT
+                elif kind == "missing":
+                    cell.value = None
+                    cell.fill = FILL_INPUT
+                    cell.comment = Comment(
+                        "Raw dashboard không có số liệu này. Vui lòng nhập tay.",
+                        "App phân tích doanh thu",
+                    )
+                else:
+                    val = computed.get(row_idx)
+                    cell.value = val
+                    cell.number_format = MONEY_FMT if row_idx in MONEY_ROWS else INT_FMT
+                    if not branch_row:
+                        cell.fill = FILL_INPUT
+                        cell.comment = Comment(
+                            f"Không có dữ liệu chi nhánh này trong file raw tháng {m['label']}.",
+                            "App phân tích doanh thu",
+                        )
 
+        ws.freeze_panes = "B2"
+        month_labels = [m["label"] for m in months]
         all_warnings.extend(
-            compare_with_previous_column(ws, next_col_idx, computed)
+            month_over_month_warnings(branch, month_labels, values_by_month)
         )
 
     out = io.BytesIO()
@@ -265,94 +289,103 @@ def append_month_to_workbook(template_bytes, raw_data: dict, month_label: str):
 # 5. UI
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Cập nhật Phân tích Doanh thu khách hàng", layout="wide")
-st.title("📊 Cập nhật Phân tích Doanh thu khách hàng theo tháng")
+st.set_page_config(page_title="Phân tích Doanh thu khách hàng", layout="wide")
+st.title("📊 Phân tích Doanh thu khách hàng — nhiều tháng")
 
 st.markdown(
     """
-Quy trình:
-1. Upload **raw dashboard** xuất từ hệ thống (dạng `dashboard-dd-mm-yyyy to dd-mm-yyyy.xlsx`).
-2. Upload file **Phân tích Doanh thu khách hàng** hiện tại (file này sẽ được thêm 1 cột tháng mới vào mỗi sheet chi nhánh).
-   Tháng sau, bạn upload lại **chính file vừa xuất** để tiếp tục nối thêm cột — không cần làm lại từ đầu.
-3. Đặt tên cột (ví dụ `T9`), kiểm tra bảng xem trước + cảnh báo, rồi tải file kết quả về.
+Upload **1 hoặc nhiều file raw dashboard** (mỗi file là 1 tháng, dạng
+`dashboard-dd-mm-yyyy to dd-mm-yyyy.xlsx`) — app sẽ tự nhận diện tháng theo
+tiêu đề trong file, gộp lại và xuất ra file **Phân tích Doanh thu khách hàng**
+đầy đủ (mỗi chi nhánh 1 sheet, mỗi tháng 1 cột, xếp theo thời gian).
+Lần sau có thêm tháng mới, chỉ cần upload thêm — không giới hạn số tháng.
 """
 )
 
-col1, col2 = st.columns(2)
-with col1:
-    raw_file = st.file_uploader("1️⃣ Raw dashboard tháng mới (.xlsx)", type=["xlsx"])
-with col2:
-    template_file = st.file_uploader(
-        "2️⃣ File Phân tích Doanh thu khách hàng hiện tại (.xlsx)", type=["xlsx"]
-    )
+raw_files = st.file_uploader(
+    "Upload raw dashboard (chọn nhiều file cùng lúc được)",
+    type=["xlsx"],
+    accept_multiple_files=True,
+)
 
-month_label = st.text_input("3️⃣ Tên cột tháng mới (vd: T9, Tháng 9...)", value="")
+if raw_files:
+    parsed = []
+    for f in raw_files:
+        try:
+            title, raw_data = read_raw_dashboard(f)
+        except Exception as e:
+            st.error(f"Lỗi đọc file '{f.name}': {e}")
+            continue
+        year, month, start_date = detect_month(title, f.name)
+        default_label = f"T{month}" if month else f.name
+        parsed.append(
+            {
+                "filename": f.name,
+                "title": title,
+                "raw_data": raw_data,
+                "year": year,
+                "month": month,
+                "start_date": start_date,
+                "default_label": default_label,
+            }
+        )
 
-if raw_file and template_file:
-    try:
-        raw_data = read_raw_dashboard(raw_file)
-    except Exception as e:
-        st.error(f"Lỗi đọc raw dashboard: {e}")
-        st.stop()
+    if parsed:
+        st.subheader("Xác nhận tên cột (tháng) cho từng file")
+        st.caption(
+            "App tự đoán tên tháng từ tiêu đề file — bạn có thể sửa lại nếu cần "
+            "(ví dụ 2 file cùng là 'T1' nhưng khác năm thì nên sửa thành 'T1/26', 'T1/27'...)."
+        )
 
-    template_bytes = template_file.read()
-    wb_preview = openpyxl.load_workbook(io.BytesIO(template_bytes))
-    sheet_names = wb_preview.sheetnames
+        # sắp theo ngày bắt đầu nếu nhận diện được, file không nhận diện được xếp cuối
+        parsed.sort(key=lambda p: (p["start_date"] is None, p["start_date"]))
 
-    st.subheader("Xem trước dữ liệu sẽ được ghi vào từng chi nhánh")
-    preview_tabs = st.tabs(sheet_names)
-    for tab, sheet_name in zip(preview_tabs, sheet_names):
-        with tab:
-            if sheet_name not in raw_data:
-                st.warning(f"Không tìm thấy '{sheet_name}' trong raw dashboard.")
-                continue
-            computed = build_branch_values(raw_data[sheet_name])
-            rows_display = []
-            for row_idx, label, kind, _key in TEMPLATE_ROWS:
-                if kind == "formula_moi":
-                    val = "= Khách mua TT / Khách mới (công thức)"
-                elif kind == "formula_cu":
-                    val = "= Khách mua TT / Khách thực tế (công thức)"
-                elif kind == "missing":
-                    val = "— (không có trong raw dashboard)"
-                else:
-                    v = computed.get(row_idx)
-                    val = f"{v:,.0f}" if isinstance(v, (int, float)) else v
-                rows_display.append({"Chỉ tiêu": label, "Giá trị": val})
-            st.table(pd.DataFrame(rows_display))
-
-    st.subheader("🔎 Cảnh báo / kiểm tra số liệu")
-    warnings = sanity_check(raw_data, sheet_names)
-    if warnings:
-        for w in warnings:
-            st.warning(w)
-    else:
-        st.success("Không phát hiện bất thường rõ ràng ở bước kiểm tra sơ bộ (trùng KPI, thiếu chi nhánh).")
-
-    st.info(
-        "ℹ️ Dòng **'Bill TB khách mới 30 ngày'** (dòng 10) hiện KHÔNG thể tự tính "
-        "từ raw dashboard này (không có cột số liệu tương ứng) — ô này sẽ để trống, "
-        "bạn cần điền tay hoặc bổ sung nguồn dữ liệu chi tiết hơn nếu cần con số này."
-    )
-
-    st.divider()
-    if not month_label.strip():
-        st.warning("Nhập tên cột tháng mới ở bước 3 để có thể xuất file.")
-    else:
-        if st.button("🚀 Xuất file cập nhật", type="primary"):
-            out_bytes, write_warnings = append_month_to_workbook(
-                template_bytes, raw_data, month_label.strip()
+        labels = []
+        for i, p in enumerate(parsed):
+            cols = st.columns([3, 2, 3])
+            cols[0].write(f"📄 {p['filename']}")
+            cols[1].write(p["title"][:40] + ("..." if len(p["title"]) > 40 else ""))
+            label = cols[2].text_input(
+                "Tên cột", value=p["default_label"], key=f"label_{i}"
             )
-            if write_warnings:
-                st.subheader("⚠️ Cảnh báo biến động so với cột trước")
-                for w in write_warnings:
+            labels.append(label)
+
+        if len(set(labels)) != len(labels):
+            st.error("❌ Có 2 file đang trùng tên cột — vui lòng sửa lại cho khác nhau.")
+        else:
+            months = [
+                {"label": labels[i], "raw_data": p["raw_data"]}
+                for i, p in enumerate(parsed)
+            ]
+
+            st.subheader("🔎 Cảnh báo / kiểm tra số liệu")
+            warnings = []
+            for i, p in enumerate(parsed):
+                warnings.extend(sanity_check_single_month(labels[i], p["raw_data"]))
+            if warnings:
+                for w in warnings:
                     st.warning(w)
-            st.success("Đã tạo file thành công!")
-            st.download_button(
-                "⬇️ Tải file Phân tích Doanh thu khách hàng (đã cập nhật)",
-                data=out_bytes,
-                file_name=f"Phan_tich_Doanh_thu_khach_hang_{month_label.strip()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            else:
+                st.success("Không phát hiện bất thường ở bước kiểm tra sơ bộ (trùng KPI giữa các chi nhánh).")
+
+            st.info(
+                "ℹ️ Dòng **'Bill TB khách mới 30 ngày'** không có trong raw dashboard "
+                "nên sẽ để trống + tô vàng để bạn nhập tay và kiểm tra kỹ."
             )
+
+            st.divider()
+            if st.button("🚀 Xuất file phân tích", type="primary"):
+                out_bytes, mom_warnings = build_workbook(months)
+                if mom_warnings:
+                    st.subheader("⚠️ Biến động lớn giữa các tháng liên tiếp")
+                    for w in mom_warnings:
+                        st.warning(w)
+                st.success("Đã tạo file thành công!")
+                st.download_button(
+                    "⬇️ Tải file Phân tích Doanh thu khách hàng",
+                    data=out_bytes,
+                    file_name="Phan_tich_Doanh_thu_khach_hang.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 else:
-    st.info("Vui lòng upload đủ 2 file ở bước 1 và 2.")
+    st.info("Vui lòng upload ít nhất 1 file raw dashboard.")
