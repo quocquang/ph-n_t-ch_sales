@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+pygwalker
+plotly
+openpyxl
+statsmodels
+scikit-learn
+streamlit
+pandas
+plotly
+openpyxl
+reportlab
