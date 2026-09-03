@@ -33,6 +33,10 @@ import streamlit as st
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
+from openpyxl.chart import BarChart, LineChart, PieChart, Reference, Series
+from openpyxl.chart.label import DataLabelList
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 # ---------------------------------------------------------------------------
 # 1. MAPPING: cột trong RAW DASHBOARD  ->  dòng trong sheet phân tích
@@ -97,6 +101,22 @@ PCT_FMT = "0.0%"
 
 MOM_THRESHOLD = 0.6          # ngưỡng cảnh báo biến động tháng-qua-tháng
 RECONCILE_TOLERANCE = 1000   # sai số cho phép khi đối soát tổng (VNĐ)
+
+# --- Bảng màu riêng cho sheet Dashboard (khác với sheet dữ liệu để dễ phân biệt) ---
+DASH_NAVY = "1F2937"
+DASH_BLUE = "2563EB"
+DASH_GREEN = "16A34A"
+DASH_ORANGE = "EA580C"
+DASH_PURPLE = "7C3AED"
+DASH_LIGHT_GREY = "F3F4F6"
+DASH_TITLE_FONT = Font(name="Arial", size=18, bold=True, color="FFFFFF")
+DASH_SECTION_FONT = Font(name="Arial", size=13, bold=True, color=DASH_NAVY)
+DASH_SUBTITLE_FONT = Font(name="Arial", size=10, italic=True, color="6B7280")
+DASH_CARD_LABEL_FONT = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+DASH_CARD_VALUE_FONT = Font(name="Arial", size=20, bold=True, color="FFFFFF")
+DASH_TABLE_HEADER_FONT = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+DASH_TABLE_FONT = Font(name="Arial", size=10)
+CARD_COLORS = [DASH_BLUE, DASH_GREEN, DASH_ORANGE, DASH_PURPLE]
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +309,387 @@ def check_month_over_month(sheet_title, month_labels, values_by_month) -> list[s
 
 
 # ---------------------------------------------------------------------------
-# 4. Xây dựng workbook nhiều tháng (+ sheet Audit lưu vết kiểm tra)
+# 4. Sheet "Dashboard" — bảng số liệu tổng hợp + biểu đồ so sánh trực quan.
+#    QUAN TRỌNG: sheet này CHỈ ĐỌC (toàn bộ ô đều là công thức trỏ về các
+#    sheet chi nhánh gốc), không đụng gì tới cách xuất dữ liệu gốc — các
+#    sheet chi nhánh + sheet Audit vẫn y nguyên như trước.
+# ---------------------------------------------------------------------------
+
+def _branch_ref(branch: str, col_letter: str, row: int) -> str:
+    """Trả về công thức tham chiếu tới 1 ô trong sheet của 1 chi nhánh,
+    vd: "='Quận 1'!B3" — dùng để Dashboard luôn đồng bộ với dữ liệu gốc,
+    không copy cứng số liệu ra 2 nơi."""
+    sheet_name = branch[:31].replace("'", "''")
+    return f"'{sheet_name}'!{col_letter}{row}"
+
+
+def _style_card(ws, row_label, row_value, col_start, col_end, color, label, value_formula, number_format=None):
+    """Vẽ 1 'thẻ KPI' kiểu dashboard hiện đại: nền màu, nhãn nhỏ phía trên,
+    số lớn phía dưới."""
+    c1 = get_column_letter(col_start)
+    c2 = get_column_letter(col_end)
+    ws.merge_cells(f"{c1}{row_label}:{c2}{row_label+1}")
+    lab = ws[f"{c1}{row_label}"]
+    lab.value = label
+    lab.font = DASH_CARD_LABEL_FONT
+    lab.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+    ws.merge_cells(f"{c1}{row_label+2}:{c2}{row_value}")
+    val = ws[f"{c1}{row_label+2}"]
+    val.value = value_formula
+    val.font = DASH_CARD_VALUE_FONT
+    val.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    if number_format:
+        val.number_format = number_format
+
+    for r in range(row_label, row_value + 1):
+        for c in range(col_start, col_end + 1):
+            ws.cell(row=r, column=c).fill = PatternFill("solid", fgColor=color)
+
+
+def _section_title(ws, row, text, col_span=16):
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=col_span)
+    cell = ws.cell(row=row, column=1)
+    cell.value = text
+    cell.font = DASH_SECTION_FONT
+    cell.fill = PatternFill("solid", fgColor=DASH_LIGHT_GREY)
+    for c in range(1, col_span + 1):
+        ws.cell(row=row, column=c).fill = PatternFill("solid", fgColor=DASH_LIGHT_GREY)
+    return row + 2  # dòng bắt đầu nội dung bên dưới tiêu đề
+
+
+def build_dashboard_sheet(ws, months, all_branches):
+    n_months = len(months)
+    month_cols = [get_column_letter(i) for i in range(2, 2 + n_months)]  # B, C, D... khớp cột trong sheet chi nhánh
+    compare_branches = [b for b in all_branches if b != "Tất cả chi nhánh"]
+    has_total = "Tất cả chi nhánh" in all_branches
+    latest_col = month_cols[-1]
+    prev_col = month_cols[-2] if n_months >= 2 else None
+
+    # cột hiển thị trong chính sheet Dashboard (khác với cột trong sheet chi nhánh)
+    for i in range(1, 20):
+        ws.column_dimensions[get_column_letter(i)].width = 14
+    ws.column_dimensions["A"].width = 26
+
+    # === TIÊU ĐỀ ===
+    ws.merge_cells("A1:P2")
+    title_cell = ws["A1"]
+    title_cell.value = "📊 DASHBOARD TỔNG QUAN — DOANH THU KHÁCH HÀNG"
+    title_cell.font = DASH_TITLE_FONT
+    title_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    for c in range(1, 17):
+        ws.cell(row=1, column=c).fill = PatternFill("solid", fgColor=DASH_NAVY)
+        ws.cell(row=2, column=c).fill = PatternFill("solid", fgColor=DASH_NAVY)
+
+    ws.merge_cells("A3:P3")
+    sub = ws["A3"]
+    sub.value = f"Các tháng: {', '.join(m['label'] for m in months)}   |   Tự động tạo — dữ liệu lấy trực tiếp từ các sheet chi nhánh"
+    sub.font = DASH_SUBTITLE_FONT
+
+    row = 5
+
+    # === HÀNG THẺ KPI (chỉ tính được nếu có sheet 'Tất cả chi nhánh') ===
+    if has_total:
+        card_row0 = row
+        card_height = 4  # tổng số hàng của 1 thẻ (2 nhãn + 2 giá trị)
+        card_width = 3
+        gap = 1
+        col_cursor = 1
+
+        # Thẻ 1: Tổng doanh thu tháng gần nhất
+        _style_card(
+            ws, card_row0, card_row0 + card_height - 1, col_cursor, col_cursor + card_width - 1,
+            CARD_COLORS[0], f"TỔNG DOANH THU ({months[-1]['label']})",
+            f"={_branch_ref('Tất cả chi nhánh', latest_col, 3)}", MONEY_FMT,
+        )
+        col_cursor += card_width + gap
+
+        # Thẻ 2: % hoàn thành KPI tháng gần nhất
+        _style_card(
+            ws, card_row0, card_row0 + card_height - 1, col_cursor, col_cursor + card_width - 1,
+            CARD_COLORS[1], f"% HOÀN THÀNH KPI ({months[-1]['label']})",
+            f"={_branch_ref('Tất cả chi nhánh', latest_col, 3)}/{_branch_ref('Tất cả chi nhánh', latest_col, 2)}",
+            PCT_FMT,
+        )
+        col_cursor += card_width + gap
+
+        # Thẻ 3: Tổng khách mới tháng gần nhất
+        _style_card(
+            ws, card_row0, card_row0 + card_height - 1, col_cursor, col_cursor + card_width - 1,
+            CARD_COLORS[2], f"KHÁCH MỚI ({months[-1]['label']})",
+            f"={_branch_ref('Tất cả chi nhánh', latest_col, 4)}", INT_FMT,
+        )
+        col_cursor += card_width + gap
+
+        # Thẻ 4: Tăng trưởng doanh thu so với tháng trước (nếu có >= 2 tháng)
+        if prev_col:
+            growth_formula = (
+                f"=({_branch_ref('Tất cả chi nhánh', latest_col, 3)}-{_branch_ref('Tất cả chi nhánh', prev_col, 3)})"
+                f"/{_branch_ref('Tất cả chi nhánh', prev_col, 3)}"
+            )
+        else:
+            growth_formula = None
+        _style_card(
+            ws, card_row0, card_row0 + card_height - 1, col_cursor, col_cursor + card_width - 1,
+            CARD_COLORS[3], f"TĂNG TRƯỞNG DT so với {months[-2]['label'] if prev_col else '-'}",
+            growth_formula if growth_formula else "n/a", PCT_FMT if growth_formula else None,
+        )
+        row = card_row0 + card_height + 2
+
+    # === SECTION 1: So sánh Doanh thu theo Chi nhánh qua các tháng (bar chart) ===
+    row = _section_title(ws, row, "1) So sánh Doanh thu theo Chi nhánh qua các tháng")
+    table_start = row
+    ws.cell(row=row, column=1, value="Chi nhánh").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_BLUE)
+    for i, m in enumerate(months):
+        cell = ws.cell(row=row, column=2 + i, value=m["label"])
+        cell.font = DASH_TABLE_HEADER_FONT
+        cell.fill = PatternFill("solid", fgColor=DASH_BLUE)
+        cell.alignment = Alignment(horizontal="center")
+    row += 1
+    for branch in compare_branches:
+        ws.cell(row=row, column=1, value=branch).font = DASH_TABLE_FONT
+        for i, col_letter in enumerate(month_cols):
+            cell = ws.cell(row=row, column=2 + i, value=f"={_branch_ref(branch, col_letter, 3)}")
+            cell.font = DASH_TABLE_FONT
+            cell.number_format = MONEY_FMT
+        row += 1
+    table_end = row - 1
+
+    chart1 = BarChart()
+    chart1.type = "col"
+    chart1.grouping = "clustered"
+    chart1.title = "Doanh thu theo Chi nhánh qua các tháng"
+    chart1.y_axis.title = "VNĐ"
+    chart1.height, chart1.width = 9, 20
+    cats = Reference(ws, min_col=1, min_row=table_start + 1, max_row=table_end)
+    data = Reference(ws, min_col=2, max_col=1 + n_months, min_row=table_start, max_row=table_end)
+    chart1.add_data(data, titles_from_data=True)
+    chart1.set_categories(cats)
+    ws.add_chart(chart1, f"{get_column_letter(2 + n_months + 1)}{table_start}")
+
+    row = max(table_end, table_start + 20) + 3
+
+    # === SECTION 2: % Hoàn thành KPI theo Chi nhánh (tháng gần nhất) ===
+    row = _section_title(ws, row, f"2) % Hoàn thành KPI theo Chi nhánh ({months[-1]['label']})")
+    table2_start = row
+    ws.cell(row=row, column=1, value="Chi nhánh").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_GREEN)
+    ws.cell(row=row, column=2, value="% Hoàn thành KPI").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=2).fill = PatternFill("solid", fgColor=DASH_GREEN)
+    row += 1
+    for branch in compare_branches:
+        ws.cell(row=row, column=1, value=branch).font = DASH_TABLE_FONT
+        cell = ws.cell(
+            row=row, column=2,
+            value=f"={_branch_ref(branch, latest_col, 3)}/{_branch_ref(branch, latest_col, 2)}",
+        )
+        cell.font = DASH_TABLE_FONT
+        cell.number_format = PCT_FMT
+        row += 1
+    table2_end = row - 1
+
+    # tô màu color-scale đỏ-vàng-xanh để nhìn phát biết chi nhánh nào yếu/mạnh
+    ws.conditional_formatting.add(
+        f"B{table2_start+1}:B{table2_end}",
+        ColorScaleRule(
+            start_type="min", start_color="F8696B",
+            mid_type="percentile", mid_value=50, mid_color="FFEB84",
+            end_type="max", end_color="63BE7B",
+        ),
+    )
+
+    chart2 = BarChart()
+    chart2.type = "bar"  # ngang, dễ đọc tên chi nhánh
+    chart2.title = f"% Hoàn thành KPI theo Chi nhánh ({months[-1]['label']})"
+    chart2.height, chart2.width = 9, 16
+    cats2 = Reference(ws, min_col=1, min_row=table2_start + 1, max_row=table2_end)
+    data2 = Reference(ws, min_col=2, min_row=table2_start, max_row=table2_end)
+    chart2.add_data(data2, titles_from_data=True)
+    chart2.set_categories(cats2)
+    ws.add_chart(chart2, f"D{table2_start}")
+
+    row = max(table2_end, table2_start + 20) + 3
+
+    # === SECTION 3: Xu hướng Tổng Doanh thu Công ty vs KPI (line chart) ===
+    if has_total and n_months >= 2:
+        row = _section_title(ws, row, "3) Xu hướng Tổng Doanh thu Công ty so với KPI")
+        table3_start = row
+        ws.cell(row=row, column=1, value="Chỉ tiêu").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_ORANGE)
+        for i, m in enumerate(months):
+            cell = ws.cell(row=row, column=2 + i, value=m["label"])
+            cell.font = DASH_TABLE_HEADER_FONT
+            cell.fill = PatternFill("solid", fgColor=DASH_ORANGE)
+            cell.alignment = Alignment(horizontal="center")
+        row += 1
+        for label, template_row in [("KPI", 2), ("Doanh thu thực tế", 3)]:
+            ws.cell(row=row, column=1, value=label).font = DASH_TABLE_FONT
+            for i, col_letter in enumerate(month_cols):
+                cell = ws.cell(row=row, column=2 + i, value=f"={_branch_ref('Tất cả chi nhánh', col_letter, template_row)}")
+                cell.font = DASH_TABLE_FONT
+                cell.number_format = MONEY_FMT
+            row += 1
+        table3_end = row - 1
+
+        chart3 = LineChart()
+        chart3.title = "Doanh thu thực tế vs KPI theo tháng"
+        chart3.y_axis.title = "VNĐ"
+        chart3.height, chart3.width = 9, 20
+        cats3 = Reference(ws, min_col=2, max_col=1 + n_months, min_row=table3_start, max_row=table3_start)
+        for r in range(table3_start + 1, table3_end + 1):
+            s = Series(Reference(ws, min_col=2, max_col=1 + n_months, min_row=r, max_row=r),
+                       title_from_data=False, title=ws.cell(row=r, column=1).value)
+            chart3.series.append(s)
+        chart3.set_categories(Reference(ws, min_col=2, max_col=1 + n_months, min_row=table3_start, max_row=table3_start))
+        for s in chart3.series:
+            s.smooth = False
+        ws.add_chart(chart3, f"{get_column_letter(2 + n_months + 1)}{table3_start}")
+
+        row = max(table3_end, table3_start + 20) + 3
+
+    # === SECTION 4: Cơ cấu Doanh thu Khách mới vs Khách cũ theo tháng ===
+    if has_total:
+        row = _section_title(ws, row, "4) Cơ cấu Doanh thu: Khách mới vs Khách cũ (toàn công ty)")
+        table4_start = row
+        ws.cell(row=row, column=1, value="Chỉ tiêu").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_PURPLE)
+        for i, m in enumerate(months):
+            cell = ws.cell(row=row, column=2 + i, value=m["label"])
+            cell.font = DASH_TABLE_HEADER_FONT
+            cell.fill = PatternFill("solid", fgColor=DASH_PURPLE)
+            cell.alignment = Alignment(horizontal="center")
+        row += 1
+        for label, template_row in [("Doanh thu khách mới", 7), ("Doanh thu khách cũ", 16)]:
+            ws.cell(row=row, column=1, value=label).font = DASH_TABLE_FONT
+            for i, col_letter in enumerate(month_cols):
+                cell = ws.cell(row=row, column=2 + i, value=f"={_branch_ref('Tất cả chi nhánh', col_letter, template_row)}")
+                cell.font = DASH_TABLE_FONT
+                cell.number_format = MONEY_FMT
+            row += 1
+        table4_end = row - 1
+
+        chart4 = BarChart()
+        chart4.type = "col"
+        chart4.grouping = "stacked"
+        chart4.overlap = 100
+        chart4.title = "Cơ cấu Doanh thu Khách mới vs Khách cũ theo tháng"
+        chart4.y_axis.title = "VNĐ"
+        chart4.height, chart4.width = 9, 16
+        cats4 = Reference(ws, min_col=2, max_col=1 + n_months, min_row=table4_start, max_row=table4_start)
+        for r in range(table4_start + 1, table4_end + 1):
+            s = Series(Reference(ws, min_col=2, max_col=1 + n_months, min_row=r, max_row=r),
+                       title=ws.cell(row=r, column=1).value)
+            chart4.series.append(s)
+        chart4.set_categories(cats4)
+        ws.add_chart(chart4, f"D{table4_start}")
+
+        # pie chart cơ cấu tháng gần nhất
+        pie_start = table4_end + 2
+        ws.cell(row=pie_start, column=1, value=f"Cơ cấu tháng {months[-1]['label']}").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=pie_start + 1, column=1, value="Khách mới").font = DASH_TABLE_FONT
+        ws.cell(row=pie_start + 1, column=2, value=f"={_branch_ref('Tất cả chi nhánh', latest_col, 7)}").number_format = MONEY_FMT
+        ws.cell(row=pie_start + 2, column=1, value="Khách cũ").font = DASH_TABLE_FONT
+        ws.cell(row=pie_start + 2, column=2, value=f"={_branch_ref('Tất cả chi nhánh', latest_col, 16)}").number_format = MONEY_FMT
+        pie = PieChart()
+        pie.title = f"Cơ cấu DT Khách mới/cũ — {months[-1]['label']}"
+        pie.height, pie.width = 8, 10
+        pie_data = Reference(ws, min_col=2, min_row=pie_start + 1, max_row=pie_start + 2)
+        pie_cats = Reference(ws, min_col=1, min_row=pie_start + 1, max_row=pie_start + 2)
+        pie.add_data(pie_data)
+        pie.set_categories(pie_cats)
+        pie.dataLabels = DataLabelList()
+        pie.dataLabels.showPercent = True
+        ws.add_chart(pie, f"D{pie_start}")
+
+        row = max(pie_start + 2, table4_start + 20) + 3
+
+    # === SECTION 5: Bill trung bình Khách mới vs Khách cũ theo Chi nhánh (tháng gần nhất) ===
+    row = _section_title(ws, row, f"5) Bill trung bình: Khách mới vs Khách cũ theo Chi nhánh ({months[-1]['label']})")
+    table5_start = row
+    ws.cell(row=row, column=1, value="Chi nhánh").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_NAVY)
+    ws.cell(row=row, column=2, value="Bill TB khách mới").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=2).fill = PatternFill("solid", fgColor=DASH_NAVY)
+    ws.cell(row=row, column=3, value="Bill TB khách cũ").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=3).fill = PatternFill("solid", fgColor=DASH_NAVY)
+    row += 1
+    for branch in compare_branches:
+        ws.cell(row=row, column=1, value=branch).font = DASH_TABLE_FONT
+        c1 = ws.cell(row=row, column=2, value=f"={_branch_ref(branch, latest_col, 8)}")
+        c1.font = DASH_TABLE_FONT
+        c1.number_format = MONEY_FMT
+        c2 = ws.cell(row=row, column=3, value=f"={_branch_ref(branch, latest_col, 17)}")
+        c2.font = DASH_TABLE_FONT
+        c2.number_format = MONEY_FMT
+        row += 1
+    table5_end = row - 1
+
+    chart5 = BarChart()
+    chart5.type = "col"
+    chart5.grouping = "clustered"
+    chart5.title = f"Bill trung bình theo Chi nhánh ({months[-1]['label']})"
+    chart5.y_axis.title = "VNĐ"
+    chart5.height, chart5.width = 9, 20
+    cats5 = Reference(ws, min_col=1, min_row=table5_start + 1, max_row=table5_end)
+    data5 = Reference(ws, min_col=2, max_col=3, min_row=table5_start, max_row=table5_end)
+    chart5.add_data(data5, titles_from_data=True)
+    chart5.set_categories(cats5)
+    ws.add_chart(chart5, f"E{table5_start}")
+
+    row = max(table5_end, table5_start + 20) + 3
+
+    # === SECTION 6: Bảng xếp hạng nhanh (leaderboard) — %KPI + tăng trưởng MoM ===
+    row = _section_title(ws, row, "6) Bảng xếp hạng nhanh theo Chi nhánh")
+    table6_start = row
+    headers6 = ["Chi nhánh", f"Doanh thu ({months[-1]['label']})", "% Hoàn thành KPI"]
+    if prev_col:
+        headers6.append(f"Tăng trưởng DT so với {months[-2]['label']}")
+    for i, h in enumerate(headers6):
+        cell = ws.cell(row=row, column=1 + i, value=h)
+        cell.font = DASH_TABLE_HEADER_FONT
+        cell.fill = PatternFill("solid", fgColor=DASH_NAVY)
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+    row += 1
+    for branch in compare_branches:
+        ws.cell(row=row, column=1, value=branch).font = DASH_TABLE_FONT
+        c_rev = ws.cell(row=row, column=2, value=f"={_branch_ref(branch, latest_col, 3)}")
+        c_rev.font = DASH_TABLE_FONT
+        c_rev.number_format = MONEY_FMT
+        c_kpi = ws.cell(row=row, column=3, value=f"={_branch_ref(branch, latest_col, 3)}/{_branch_ref(branch, latest_col, 2)}")
+        c_kpi.font = DASH_TABLE_FONT
+        c_kpi.number_format = PCT_FMT
+        if prev_col:
+            c_growth = ws.cell(
+                row=row, column=4,
+                value=f"=({_branch_ref(branch, latest_col, 3)}-{_branch_ref(branch, prev_col, 3)})/{_branch_ref(branch, prev_col, 3)}",
+            )
+            c_growth.font = DASH_TABLE_FONT
+            c_growth.number_format = PCT_FMT
+        row += 1
+    table6_end = row - 1
+
+    ws.conditional_formatting.add(
+        f"C{table6_start+1}:C{table6_end}",
+        ColorScaleRule(
+            start_type="min", start_color="F8696B",
+            mid_type="percentile", mid_value=50, mid_color="FFEB84",
+            end_type="max", end_color="63BE7B",
+        ),
+    )
+    if prev_col:
+        ws.conditional_formatting.add(
+            f"D{table6_start+1}:D{table6_end}",
+            DataBarRule(start_type="min", end_type="max", color="2563EB"),
+        )
+
+    ws.freeze_panes = "A5"
+    ws.sheet_view.showGridLines = False
+
+
+# ---------------------------------------------------------------------------
+# 5. Xây dựng workbook nhiều tháng (+ sheet Audit lưu vết kiểm tra, +
+#    sheet Dashboard trực quan với biểu đồ so sánh)
 # ---------------------------------------------------------------------------
 
 def build_workbook(months: list[dict]):
@@ -440,7 +840,7 @@ def recalc_with_libreoffice(xlsx_bytes: io.BytesIO, timeout: int = 30) -> io.Byt
 
 
 # ---------------------------------------------------------------------------
-# 5. UI
+# 6. UI
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="Phân tích Doanh thu khách hàng", layout="wide")
