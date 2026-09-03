@@ -10,8 +10,12 @@ Cách chạy:
 
 import io
 import re
+import shutil
+import subprocess
+import tempfile
 from copy import copy
 from datetime import date
+from pathlib import Path
 
 import openpyxl
 import pandas as pd
@@ -285,6 +289,35 @@ def build_workbook(months: list[dict]):
     return out, all_warnings
 
 
+def recalc_with_libreoffice(xlsx_bytes: io.BytesIO, timeout: int = 30) -> io.BytesIO:
+    """Mở/lưu lại file bằng LibreOffice headless để công thức (=B5/B4...) có
+    sẵn giá trị đã tính (cached value), thay vì để trống cho tới khi người
+    dùng tự mở file và tính lại. Nếu máy chủ không có LibreOffice, hoặc có
+    lỗi bất kỳ, trả nguyên file gốc (công thức vẫn đúng, Excel sẽ tự tính khi
+    mở bình thường — chỉ là chưa có sẵn giá trị cache)."""
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return xlsx_bytes
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path = Path(tmpdir) / "in.xlsx"
+            in_path.write_bytes(xlsx_bytes.getvalue())
+            result = subprocess.run(
+                [soffice, "--headless", "--calc", "--convert-to", "xlsx",
+                 "--outdir", tmpdir, str(in_path)],
+                capture_output=True, timeout=timeout, text=True,
+            )
+            out_path = Path(tmpdir) / "in.xlsx"
+            if result.returncode == 0 and out_path.exists():
+                recalced = io.BytesIO(out_path.read_bytes())
+                recalced.seek(0)
+                return recalced
+    except Exception:
+        pass
+    return xlsx_bytes
+
+
 # ---------------------------------------------------------------------------
 # 5. UI
 # ---------------------------------------------------------------------------
@@ -376,6 +409,7 @@ if raw_files:
             st.divider()
             if st.button("🚀 Xuất file phân tích", type="primary"):
                 out_bytes, mom_warnings = build_workbook(months)
+                out_bytes = recalc_with_libreoffice(out_bytes)
                 if mom_warnings:
                     st.subheader("⚠️ Biến động lớn giữa các tháng liên tiếp")
                     for w in mom_warnings:
