@@ -546,17 +546,39 @@ def render_web_dashboard(df: pd.DataFrame, months: list[dict]):
         st.info("Chưa có đủ dữ liệu để vẽ Dashboard.")
         return
 
+    st.header("📊 Dashboard trực quan")
+
+    # === BỘ LỌC THÁNG ===
+    # Danh sách tháng lấy TỰ ĐỘNG từ dữ liệu đã upload — có bao nhiêu tháng
+    # (T6, T7, T8, T9, T10...) app tự liệt kê đủ ra đây, không cần sửa code
+    # khi bạn upload thêm tháng mới. Mặc định chọn hết, bạn có thể bỏ bớt
+    # để chỉ xem 1-2 tháng muốn so sánh.
+    all_labels = [m["label"] for m in months]
+    selected_labels = st.multiselect(
+        "🗓️ Chọn tháng muốn xem (mặc định: tất cả)",
+        options=all_labels,
+        default=all_labels,
+    )
+    if not selected_labels:
+        st.warning("Vui lòng chọn ít nhất 1 tháng để xem Dashboard.")
+        return
+
+    # Lọc lại months + df theo đúng thứ tự thời gian gốc (không theo thứ tự
+    # người dùng bấm chọn), để biểu đồ xu hướng / tăng trưởng vẫn đúng chiều.
+    months = [m for m in months if m["label"] in selected_labels]
+    df = df[df["Tháng"].isin(selected_labels)].copy()
+    df["Tháng"] = df["Tháng"].cat.remove_unused_categories()
+
+    st.caption(
+        f"Đang xem: {', '.join(m['label'] for m in months)} • "
+        "Biểu đồ dưới đây chỉ hiển thị trên web — không ảnh hưởng tới file Excel xuất ra."
+    )
+
     latest_label = months[-1]["label"]
     prev_label = months[-2]["label"] if len(months) >= 2 else None
     has_total = (df["Chi nhánh"] == "Tất cả chi nhánh").any()
     df_branches = df[df["Chi nhánh"] != "Tất cả chi nhánh"].copy()
     df_total = df[df["Chi nhánh"] == "Tất cả chi nhánh"].copy()
-
-    st.header("📊 Dashboard trực quan")
-    st.caption(
-        f"Các tháng: {', '.join(m['label'] for m in months)} • "
-        "Biểu đồ dưới đây chỉ hiển thị trên web — không ảnh hưởng tới file Excel xuất ra."
-    )
 
     # === HÀNG THẺ KPI ===
     if has_total:
