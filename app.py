@@ -498,6 +498,47 @@ def build_stats_dataframe(months: list[dict], all_branches: list[str]) -> pd.Dat
     return df
 
 
+def _hex_to_rgb(h: str):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _lerp_color(c1, c2, t):
+    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
+
+
+def _normalize(series: pd.Series):
+    s = series.astype(float)
+    lo, hi = s.min(), s.max()
+    if pd.isna(lo) or pd.isna(hi) or hi == lo:
+        return [0.5] * len(s)
+    return ((s - lo) / (hi - lo)).tolist()
+
+
+def _green_gradient(series: pd.Series):
+    """Tô nền màu xanh lá đậm dần theo giá trị — thay thế cho
+    Styler.background_gradient (cần matplotlib, Streamlit Cloud không có
+    sẵn) bằng cách tự nội suy màu, không phụ thuộc thư viện ngoài."""
+    light, dark = _hex_to_rgb("EDF8E9"), _hex_to_rgb("006D2C")
+    return [
+        f"background-color: rgb{_lerp_color(light, dark, t)}; color: {'white' if t > 0.6 else 'black'}"
+        for t in _normalize(series)
+    ]
+
+
+def _red_yellow_green_gradient(series: pd.Series):
+    """Tô nền đỏ (thấp) → vàng (giữa) → xanh lá (cao), không cần matplotlib."""
+    red, yellow, green = _hex_to_rgb("F8696B"), _hex_to_rgb("FFEB84"), _hex_to_rgb("63BE7B")
+    out = []
+    for t in _normalize(series):
+        if t < 0.5:
+            color = _lerp_color(red, yellow, t / 0.5)
+        else:
+            color = _lerp_color(yellow, green, (t - 0.5) / 0.5)
+        out.append(f"background-color: rgb{color}")
+    return out
+
+
 def render_web_dashboard(df: pd.DataFrame, months: list[dict]):
     """Vẽ Dashboard đầy đủ ngay trên trang web bằng Plotly — thay thế hoàn
     toàn cho việc phải mở Excel mới xem được biểu đồ."""
@@ -645,8 +686,8 @@ def render_web_dashboard(df: pd.DataFrame, months: list[dict]):
         df_table = df_table[display_cols].rename(columns=rename_map).set_index("Chi nhánh")
         money_cols = [label for key, label, _r, fmt in STAT_FIELDS if fmt == MONEY_FMT]
         int_cols = [label for key, label, _r, fmt in STAT_FIELDS if fmt == INT_FMT]
-        styled = df_table.style.format({c: "{:,.0f}" for c in money_cols + int_cols}).background_gradient(
-            subset=["Doanh thu"], cmap="Greens"
+        styled = df_table.style.format({c: "{:,.0f}" for c in money_cols + int_cols}).apply(
+            _green_gradient, subset=["Doanh thu"]
         )
         st.dataframe(styled, use_container_width=True)
 
@@ -665,8 +706,8 @@ def render_web_dashboard(df: pd.DataFrame, months: list[dict]):
         fmt_dict = {f"Doanh thu ({latest_label})": "{:,.0f}", "% Hoàn thành KPI": "{:.1%}"}
         if "Tăng trưởng DT" in rank_df.columns:
             fmt_dict["Tăng trưởng DT"] = "{:+.1%}"
-        styled_rank = rank_df.style.format(fmt_dict).background_gradient(
-            subset=["% Hoàn thành KPI"], cmap="RdYlGn"
+        styled_rank = rank_df.style.format(fmt_dict).apply(
+            _red_yellow_green_gradient, subset=["% Hoàn thành KPI"]
         )
         st.dataframe(styled_rank, use_container_width=True)
 
