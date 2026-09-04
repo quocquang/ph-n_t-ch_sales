@@ -682,6 +682,187 @@ def build_dashboard_sheet(ws, months, all_branches):
             f"D{table6_start+1}:D{table6_end}",
             DataBarRule(start_type="min", end_type="max", color="2563EB"),
         )
+    row = max(table6_end, table6_start + 20) + 3
+
+    # === SECTION 7: Xu hướng Khách mới vs Khách cũ mua hàng theo tháng (toàn công ty) ===
+    if has_total:
+        row = _section_title(ws, row, "7) Xu hướng Khách mới vs Khách cũ mua hàng theo tháng (toàn công ty)")
+        table7_start = row
+        ws.cell(row=row, column=1, value="Chỉ tiêu").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_BLUE)
+        for i, m in enumerate(months):
+            cell = ws.cell(row=row, column=2 + i, value=m["label"])
+            cell.font = DASH_TABLE_HEADER_FONT
+            cell.fill = PatternFill("solid", fgColor=DASH_BLUE)
+            cell.alignment = Alignment(horizontal="center")
+        row += 1
+        for label, template_row in [("Khách mới", 4), ("Khách cũ mua hàng (TT)", 14)]:
+            ws.cell(row=row, column=1, value=label).font = DASH_TABLE_FONT
+            for i, col_letter in enumerate(month_cols):
+                cell = ws.cell(row=row, column=2 + i, value=f"={_branch_ref('Tất cả chi nhánh', col_letter, template_row)}")
+                cell.font = DASH_TABLE_FONT
+                cell.number_format = INT_FMT
+            row += 1
+        table7_end = row - 1
+
+        chart7 = LineChart()
+        chart7.title = "Xu hướng Khách mới vs Khách cũ mua hàng"
+        chart7.y_axis.title = "Số khách"
+        chart7.height, chart7.width = 9, 18
+        cats7 = Reference(ws, min_col=2, max_col=1 + n_months, min_row=table7_start, max_row=table7_start)
+        for r in range(table7_start + 1, table7_end + 1):
+            s = Series(Reference(ws, min_col=2, max_col=1 + n_months, min_row=r, max_row=r),
+                       title=ws.cell(row=r, column=1).value)
+            chart7.series.append(s)
+        chart7.set_categories(cats7)
+        for s in chart7.series:
+            s.smooth = False
+            s.marker.symbol = "circle"
+        ws.add_chart(chart7, f"{get_column_letter(2 + n_months + 1)}{table7_start}")
+
+        row = max(table7_end, table7_start + 20) + 3
+
+    # === SECTION 8: Phễu chuyển đổi Khách mới (toàn công ty, tháng gần nhất) ===
+    if has_total:
+        row = _section_title(ws, row, f"8) Phễu chuyển đổi Khách mới — Booking → Checkin → Mua hàng ({months[-1]['label']})")
+        table8_start = row
+        ws.cell(row=row, column=1, value="Giai đoạn").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_GREEN)
+        ws.cell(row=row, column=2, value="Số lượng").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=row, column=2).fill = PatternFill("solid", fgColor=DASH_GREEN)
+        row += 1
+        for label, template_row in [("Booking mới", 11), ("Checkin mới", 12), ("Mua hàng TT (mới)", 5)]:
+            ws.cell(row=row, column=1, value=label).font = DASH_TABLE_FONT
+            cell = ws.cell(row=row, column=2, value=f"={_branch_ref('Tất cả chi nhánh', latest_col, template_row)}")
+            cell.font = DASH_TABLE_FONT
+            cell.number_format = INT_FMT
+            row += 1
+        table8_end = row - 1
+
+        chart8 = BarChart()
+        chart8.type = "bar"
+        chart8.title = f"Phễu chuyển đổi Khách mới ({months[-1]['label']})"
+        chart8.height, chart8.width = 8, 14
+        chart8.legend = None
+        cats8 = Reference(ws, min_col=1, min_row=table8_start + 1, max_row=table8_end)
+        data8 = Reference(ws, min_col=2, min_row=table8_start, max_row=table8_end)
+        chart8.add_data(data8, titles_from_data=True)
+        chart8.set_categories(cats8)
+        ws.add_chart(chart8, f"D{table8_start}")
+
+        row = max(table8_end, table8_start + 18) + 3
+
+    # === SECTION 9: Tỷ lệ chốt Khách mới vs Khách cũ theo Chi nhánh (tháng gần nhất) ===
+    row = _section_title(ws, row, f"9) Tỷ lệ chốt Khách mới vs Khách cũ theo Chi nhánh ({months[-1]['label']})")
+    table9_start = row
+    ws.cell(row=row, column=1, value="Chi nhánh").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_ORANGE)
+    ws.cell(row=row, column=2, value="Tỷ lệ chốt Khách mới").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=2).fill = PatternFill("solid", fgColor=DASH_ORANGE)
+    ws.cell(row=row, column=3, value="Tỷ lệ chốt Khách cũ").font = DASH_TABLE_HEADER_FONT
+    ws.cell(row=row, column=3).fill = PatternFill("solid", fgColor=DASH_ORANGE)
+    row += 1
+    for branch in compare_branches:
+        ws.cell(row=row, column=1, value=branch).font = DASH_TABLE_FONT
+        c1 = ws.cell(row=row, column=2, value=f"={_branch_ref(branch, latest_col, 5)}/{_branch_ref(branch, latest_col, 4)}")
+        c1.font = DASH_TABLE_FONT
+        c1.number_format = PCT_FMT
+        c2 = ws.cell(row=row, column=3, value=f"={_branch_ref(branch, latest_col, 14)}/{_branch_ref(branch, latest_col, 13)}")
+        c2.font = DASH_TABLE_FONT
+        c2.number_format = PCT_FMT
+        row += 1
+    table9_end = row - 1
+
+    chart9 = BarChart()
+    chart9.type = "col"
+    chart9.grouping = "clustered"
+    chart9.title = f"Tỷ lệ chốt Khách mới vs Khách cũ theo Chi nhánh ({months[-1]['label']})"
+    chart9.y_axis.title = "%"
+    chart9.y_axis.numFmt = "0%"
+    chart9.height, chart9.width = 9, 20
+    cats9 = Reference(ws, min_col=1, min_row=table9_start + 1, max_row=table9_end)
+    data9 = Reference(ws, min_col=2, max_col=3, min_row=table9_start, max_row=table9_end)
+    chart9.add_data(data9, titles_from_data=True)
+    chart9.set_categories(cats9)
+    ws.add_chart(chart9, f"E{table9_start}")
+
+    row = max(table9_end, table9_start + 20) + 3
+
+    # === SECTION 10: Xu hướng Doanh thu Khách mới 30 ngày theo tháng (toàn công ty) ===
+    if has_total:
+        row = _section_title(ws, row, "10) Xu hướng Doanh thu Khách mới trong 30 ngày đầu (toàn công ty)")
+        table10_start = row
+        ws.cell(row=row, column=1, value="Chỉ tiêu").font = DASH_TABLE_HEADER_FONT
+        ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=DASH_PURPLE)
+        for i, m in enumerate(months):
+            cell = ws.cell(row=row, column=2 + i, value=m["label"])
+            cell.font = DASH_TABLE_HEADER_FONT
+            cell.fill = PatternFill("solid", fgColor=DASH_PURPLE)
+            cell.alignment = Alignment(horizontal="center")
+        row += 1
+        ws.cell(row=row, column=1, value="DT khách mới 30 ngày").font = DASH_TABLE_FONT
+        for i, col_letter in enumerate(month_cols):
+            cell = ws.cell(row=row, column=2 + i, value=f"={_branch_ref('Tất cả chi nhánh', col_letter, 9)}")
+            cell.font = DASH_TABLE_FONT
+            cell.number_format = MONEY_FMT
+        row += 1
+        table10_end = row - 1
+
+        chart10 = LineChart()
+        chart10.title = "Doanh thu Khách mới trong 30 ngày đầu theo tháng"
+        chart10.y_axis.title = "VNĐ"
+        chart10.height, chart10.width = 9, 18
+        cats10 = Reference(ws, min_col=2, max_col=1 + n_months, min_row=table10_start, max_row=table10_start)
+        s10 = Series(Reference(ws, min_col=2, max_col=1 + n_months, min_row=table10_end, max_row=table10_end),
+                     title=ws.cell(row=table10_end, column=1).value)
+        chart10.series.append(s10)
+        chart10.set_categories(cats10)
+        chart10.series[0].smooth = False
+        chart10.series[0].marker.symbol = "circle"
+        chart10.style = 12
+        ws.add_chart(chart10, f"{get_column_letter(2 + n_months + 1)}{table10_start}")
+
+        row = max(table10_end, table10_start + 18) + 3
+
+    # === SECTION 11: Bảng tổng hợp đầy đủ chỉ số theo Chi nhánh (tháng gần nhất) ===
+    row = _section_title(ws, row, f"11) Bảng tổng hợp đầy đủ chỉ số theo Chi nhánh — {months[-1]['label']}")
+    table11_start = row
+    full_cols = [
+        ("KPI", 2, MONEY_FMT), ("Doanh thu", 3, MONEY_FMT), ("Khách mới", 4, INT_FMT),
+        ("Mua TT (mới)", 5, INT_FMT), ("DT khách mới", 7, MONEY_FMT), ("Bill TB (mới)", 8, MONEY_FMT),
+        ("Booking mới", 11, INT_FMT), ("Checkin mới", 12, INT_FMT), ("Khách cũ (thực tế)", 13, INT_FMT),
+        ("Mua TT (cũ)", 14, INT_FMT), ("DT khách cũ", 16, MONEY_FMT), ("Bill TB (cũ)", 17, MONEY_FMT),
+    ]
+    headers11 = ["Chi nhánh"] + [c[0] for c in full_cols]
+    for i, h in enumerate(headers11):
+        cell = ws.cell(row=row, column=1 + i, value=h)
+        cell.font = DASH_TABLE_HEADER_FONT
+        cell.fill = PatternFill("solid", fgColor=DASH_NAVY)
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+    row += 1
+    for branch in compare_branches:
+        ws.cell(row=row, column=1, value=branch).font = DASH_TABLE_FONT
+        for i, (_, template_row, fmt) in enumerate(full_cols):
+            cell = ws.cell(row=row, column=2 + i, value=f"={_branch_ref(branch, latest_col, template_row)}")
+            cell.font = DASH_TABLE_FONT
+            cell.number_format = fmt
+        row += 1
+    table11_end = row - 1
+
+    try:
+        tbl = Table(
+            displayName="BangTongHopChiNhanh",
+            ref=f"A{table11_start}:{get_column_letter(1 + len(full_cols))}{table11_end}",
+        )
+        tbl.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2", showRowStripes=True, showFirstColumn=False,
+            showLastColumn=False, showColumnStripes=False,
+        )
+        ws.add_table(tbl)
+    except Exception:
+        pass  # nếu tên trùng/định dạng lỗi thì bỏ qua table style, dữ liệu vẫn còn nguyên
+
+    row = table11_end + 3
 
     ws.freeze_panes = "A5"
     ws.sheet_view.showGridLines = False
@@ -773,8 +954,12 @@ def build_workbook(months: list[dict]):
             check_month_over_month(branch, month_labels, values_by_month)
         )
 
+    # --- Sheet Dashboard: bảng tổng hợp + biểu đồ so sánh trực quan ---
+    dash_ws = wb.create_sheet("Dashboard", 0)
+    build_dashboard_sheet(dash_ws, months, all_branches)
+
     # --- Sheet Audit: lưu toàn bộ kết quả kiểm tra vào chính file xuất ra ---
-    audit_ws = wb.create_sheet("Audit", 0)
+    audit_ws = wb.create_sheet("Audit", 1)
     audit_ws.column_dimensions["A"].width = 100
     audit_ws["A1"] = f"Báo cáo kiểm tra số liệu — tự động tạo lúc xuất file"
     audit_ws["A1"].font = FONT_BOLD
