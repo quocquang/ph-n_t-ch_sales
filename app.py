@@ -56,6 +56,7 @@ RAW_COLS = {
     "mua_tt_kc": "Mua TT KC",
     "dt_khach_cu": "DT khách cũ",
     "bill_tb_mua_kc": "Bill TB mua KC",
+    "lieu_trinh": "Liệu trình",
 }
 
 # (dòng trong sheet phân tích, nhãn, loại, key trong RAW_COLS)
@@ -76,6 +77,8 @@ TEMPLATE_ROWS = [
     (15, "Tỷ lệ chốt khách cũ", "formula_cu", None),
     (16, "Doanh thu khách cũ", "raw", "dt_khach_cu"),
     (17, "Bill TB khách cũ", "raw", "bill_tb_mua_kc"),
+    (18, "Khách liệu trình", "raw", "lieu_trinh"),
+    (19, "Khách liệu trình cũ", "formula_lieutrinh_cu", None),  # = Khách liệu trình - Khách mới
 ]
 
 MONEY_ROWS = {2, 3, 7, 9, 16}
@@ -210,6 +213,10 @@ def build_branch_values(branch_row: dict) -> dict:
             out[row_idx] = to_num(raw_vals[key])
         elif kind == "khach_cu":
             out[row_idx] = parse_khach_cu(raw_vals["khach_thuc_te"])
+        elif kind == "formula_lieutrinh_cu":
+            # Khách liệu trình cũ = Khách liệu trình (dòng 18) - Khách mới (dòng 4)
+            lt, km = out.get(18), out.get(4)
+            out[row_idx] = (lt - km) if (lt is not None and km is not None) else None
         else:
             out[row_idx] = None
     return out
@@ -277,7 +284,7 @@ def check_month_over_month(sheet_title, month_labels, values_by_month) -> list[s
         prev_label, cur_label = month_labels[i - 1], month_labels[i]
         prev_vals, cur_vals = values_by_month[i - 1], values_by_month[i]
         for row_idx, label, kind, _key in TEMPLATE_ROWS:
-            if kind not in ("raw", "khach_cu"):
+            if kind not in ("raw", "khach_cu", "formula_lieutrinh_cu"):
                 continue
             pv, cv = prev_vals.get(row_idx), cur_vals.get(row_idx)
             if pv in (None, 0) or cv is None:
@@ -356,6 +363,9 @@ def build_workbook(months: list[dict]):
                 elif kind == "formula_cu":
                     cell.value = f"={col_letter}14/{col_letter}13"
                     cell.number_format = PCT_FMT
+                elif kind == "formula_lieutrinh_cu":
+                    cell.value = f"={col_letter}18-{col_letter}4"
+                    cell.number_format = INT_FMT
                 elif kind == "missing":
                     cell.value = None
                     cell.fill = FILL_INPUT
@@ -465,6 +475,8 @@ STAT_FIELDS = [
     ("mua_tt_kc", "Mua TT (cũ)", 14, INT_FMT),
     ("dt_khach_cu", "DT khách cũ", 16, MONEY_FMT),
     ("bill_tb_kc", "Bill TB (cũ)", 17, MONEY_FMT),
+    ("lieu_trinh", "Khách liệu trình", 18, INT_FMT),
+    ("lieu_trinh_cu", "Khách liệu trình cũ", 19, INT_FMT),
 ]
 STAT_ROW_BY_KEY = {key: row for key, _label, row, _fmt in STAT_FIELDS}
 
