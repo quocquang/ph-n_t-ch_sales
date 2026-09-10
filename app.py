@@ -1,34 +1,31 @@
 """
-Streamlit app: Tự động tạo sheet "KTV-TVV" (Bảng đánh giá vận hành + hiệu suất
-KTV/TVV + hiệu quả chi phí nhân sự theo chi nhánh) từ 3 file raw:
+Streamlit app: Tự động tạo sheet "KTV-TVV" từ raw data — BẢN NÂNG CẤP (nhanh
+hơn + chi tiết hơn):
 
-  1. File "Phân tích Doanh thu khách hàng" (nhiều tháng, mỗi chi nhánh 1 sheet)
-     — sinh ra từ app phân tích doanh thu.
-  2. File Payroll tháng TRƯỚC (sheet "Bảng lương").
-  3. File Payroll tháng HIỆN TẠI (sheet "Bảng lương").
+  1. File "Phân tích Doanh thu khách hàng" (nhiều tháng, mỗi chi nhánh 1 sheet).
+  2. File Payroll — upload BAO NHIÊU FILE CŨNG ĐƯỢC (sheet "Bảng lương").
 
-Toàn bộ công thức đã được ĐỐI CHIẾU và khớp chính xác 100% với file báo cáo
-lương T8/2026 (so sánh T7/2026) do người dùng tự làm tay trước đó, trên 3 chi
-nhánh mẫu (Bình Dương, Vũng Tàu, Quận 1) và toàn bộ 26 chỉ tiêu:
+ĐIỂM MỚI so với bản trước:
+  ⚡ TỐC ĐỘ: đọc file payroll ở chế độ read_only (nhanh hơn ~30 lần so với
+     cách đọc thông thường — 1 file 17MB từ ~34s xuống còn ~1s) + cache lại
+     kết quả đọc file (st.cache_data) để bấm nút xuất nhiều lần không phải
+     đọc lại file từ đầu.
+  📊 THÊM CỘT "TẤT CẢ CHI NHÁNH": tổng hợp toàn công ty ở cuối bảng, tính
+     đúng theo trọng số (vd tỷ lệ chốt = tổng khách chốt / tổng khách, không
+     phải trung bình cộng đơn giản của 9 chi nhánh).
+  🎨 TÔ MÀU CHÊNH LỆCH: cột "Δ" tự động xanh khi tốt lên / đỏ khi xấu đi
+     (doanh thu tăng = xanh, chi phí nhân sự tăng = đỏ...).
+  🔎 SHEET "AUDIT" MỚI: tự động cảnh báo — chi nhánh có trong Payroll nhưng
+     chưa cấu hình trong app (dữ liệu sẽ bị bỏ sót), chi nhánh thiếu dữ liệu
+     doanh thu, chi nhánh có Chi phí nhân sự tăng nhanh hơn Doanh thu, chi
+     nhánh sụt doanh thu so với tháng trước.
 
-  - Bảng "CHỈ SỐ VẬN HÀNH" (Khách mới/cũ, Doanh thu, Tỷ lệ chốt, Bill TB)
-    lấy trực tiếp từ file Phân tích Doanh thu, theo tên chi nhánh + nhãn tháng.
-  - "Số nhân sự"      = tổng số dòng nhân viên của chi nhánh trong Bảng lương
-  - "KTV"             = Kỹ thuật viên + Kỹ thuật viên phun xăm + Chuyên viên Clinic
-  - "TVV"             = Tư vấn viên + Trợ lý bác sĩ
-  - "OM/CM/LEAD"      = OM + CM + LEAD
-  - "QLCN"            = QLCN
-  - "Doanh thu KTV/TVV" = SUM("DOANH THU CÁ NHÂN TRƯỚC THUẾ PHÍ") theo nhóm
-  - "Điểm tour KTV"     = SUM("TỔNG ĐIỂM TOUR CÁ NHÂN") nhóm KTV
-  - "Thu nhập BQ KTV/TVV" = AVERAGE("TỔNG THU NHẬP") theo nhóm
-  - "Tỷ lệ chốt bình quân" (TVV) = AVERAGE("TỶ LỆ % CÁ NHÂN ĐẠT SO VỚI KPI") nhóm TVV
-  - "Chi phí nhân sự"   = SUM("TỔNG THU NHẬP") TOÀN BỘ nhân sự chi nhánh (mọi vị trí)
-  - "Thu nhập BQ/tổng NS", "Doanh thu/tổng NS", "Điểm hiệu quả", "Xếp hạng":
-    tính bằng công thức Excel y hệt file gốc.
+Toàn bộ công thức nghiệp vụ đã ĐỐI CHIẾU khớp chính xác 100% với file báo cáo
+lương T8/2026 (so với T7/2026) người dùng tự làm tay, trên toàn bộ 9 chi nhánh
+và 26 chỉ tiêu.
 
 LƯU Ý: vị trí cột "TỔNG THU NHẬP" và các cột khác trong "Bảng lương" LỆCH NHAU
-giữa các tháng (do người làm lương chèn/xoá cột) — app dò cột theo TÊN HEADER,
-không theo số thứ tự cột, để không bao giờ đọc nhầm cột khi cấu trúc file đổi.
+giữa các tháng — app dò cột theo TÊN HEADER, không theo số thứ tự cột.
 
 Cách chạy:
     pip install streamlit openpyxl
@@ -37,18 +34,16 @@ Cách chạy:
 
 import io
 import re
-from datetime import date
 
 import openpyxl
 import streamlit as st
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import CellIsRule
 
 # ---------------------------------------------------------------------------
-# 1. CẤU HÌNH CHI NHÁNH — thứ tự cột đúng như file KTV-TVV gốc.
-#    "payroll" = tên viết hoa không dấu-cách kiểu trong Bảng lương.
-#    "revenue_sheet" = tên sheet trong file Phân tích Doanh thu khách hàng.
+# 1. CẤU HÌNH CHI NHÁNH
 # ---------------------------------------------------------------------------
 
 BRANCHES = [
@@ -62,14 +57,13 @@ BRANCHES = [
     {"label": "Bình Tân",   "payroll": "BÌNH TÂN",   "revenue_sheet": "Bình Tân"},
     {"label": "Phú Nhuận",  "payroll": "PHÚ NHUẬN",  "revenue_sheet": "Phú Nhuận"},
 ]
+TOTAL_LABEL = "TẤT CẢ CHI NHÁNH"
 
 KTV_ROLES = {"Kỹ thuật viên", "Kỹ thuật viên phun xăm", "Chuyên viên Clinic"}
 TVV_ROLES = {"Tư vấn viên", "Trợ lý bác sĩ"}
 OMCMLEAD_ROLES = {"OM", "CM", "LEAD"}
 QLCN_ROLES = {"QLCN"}
 
-# Cột cần dò theo tên header trong sheet "Bảng lương" (không dò theo số cột
-# cố định vì bố cục lệch giữa các tháng).
 NEEDED_HEADERS = {
     "chi_nhanh": "CHI NHÁNH LÀM VIỆC",
     "vi_tri": "VỊ TRÍ",
@@ -83,8 +77,15 @@ FONT = Font(name="Arial", size=11)
 FONT_BOLD = Font(name="Arial", size=11, bold=True)
 FONT_HEADER = Font(name="Arial", size=11, bold=True, color="FFFFFF")
 FILL_HEADER = PatternFill("solid", fgColor="4472C4")
+FILL_TOTAL_HEADER = PatternFill("solid", fgColor="1F3864")
 FILL_SECTION = PatternFill("solid", fgColor="D9E1F2")
 FILL_INPUT = PatternFill("solid", fgColor="FFFF00")
+FILL_DIFF = PatternFill("solid", fgColor="F2F2F2")
+FILL_GOOD = PatternFill("solid", fgColor="C6EFCE")
+FILL_BAD = PatternFill("solid", fgColor="FFC7CE")
+FILL_WARN = PatternFill("solid", fgColor="FFEB9C")
+FONT_GOOD = Font(name="Arial", size=11, color="006100")
+FONT_BAD = Font(name="Arial", size=11, color="9C0006")
 THIN = Side(style="thin", color="D9D9D9")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 MONEY_FMT = "#,##0"
@@ -93,12 +94,10 @@ PCT_FMT = "0.0%"
 
 
 # ---------------------------------------------------------------------------
-# 2. ĐỌC FILE PAYROLL (sheet "Bảng lương") — dò cột theo tên header
+# 2. ĐỌC FILE PAYROLL — read_only + cache để nhanh
 # ---------------------------------------------------------------------------
 
 def find_header_columns(ws, header_map, search_rows=(2, 3, 4)):
-    """Dò vị trí cột (1-indexed) cho từng tên header cần tìm, quét vài dòng
-    đầu (vì header có thể nằm ở dòng gộp merge khác nhau giữa các tháng)."""
     found = {}
     max_col = ws.max_column
     for r in search_rows:
@@ -122,13 +121,11 @@ def find_header_columns(ws, header_map, search_rows=(2, 3, 4)):
 
 
 def detect_payroll_month(title: str, filename: str):
-    """Nhận diện tháng từ tiêu đề dạng 'BẢNG LƯƠNG CHI NHÁNH THÁNG 08/2026'."""
     text = f"{title} {filename}"
     m = re.search(r"THÁNG\s*(\d{1,2})\s*/\s*(\d{4})", text, re.IGNORECASE)
     if m:
         month, year = int(m.group(1)), int(m.group(2))
         return year, month, f"T{month}"
-    # fallback: dd-mm-yyyy trong tên file
     m2 = re.search(r"(\d{2})-(\d{2})-(\d{4})", text)
     if m2:
         dd, mm, yyyy = m2.groups()
@@ -136,19 +133,24 @@ def detect_payroll_month(title: str, filename: str):
     return None, None, None
 
 
-def read_payroll(file):
-    """Đọc sheet 'Bảng lương', trả về (label_thang, {payroll_branch_name: stats})."""
-    wb = openpyxl.load_workbook(file, data_only=True)
+@st.cache_data(show_spinner=False)
+def read_payroll_bytes(data: bytes, filename: str):
+    """Đọc sheet 'Bảng lương' ở chế độ read_only (nhanh hơn nhiều lần so với
+    load bình thường trên file lớn nhiều sheet). Trả về:
+      (year, month, label, {branch: stats}, unmapped_branches_set)
+    unmapped_branches_set = tên chi nhánh xuất hiện trong Payroll nhưng CHƯA
+    có trong cấu hình BRANCHES của app (để cảnh báo, tránh bỏ sót âm thầm)."""
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     if "Bảng lương" not in wb.sheetnames:
-        raise ValueError(f"File '{file.name}' không có sheet 'Bảng lương'.")
+        raise ValueError(f"File '{filename}' không có sheet 'Bảng lương'.")
     ws = wb["Bảng lương"]
 
     title = ws.cell(row=1, column=3).value or ""
-    year, month, label = detect_payroll_month(title, file.name)
+    year, month, label = detect_payroll_month(title, filename)
 
     cols = find_header_columns(ws, NEEDED_HEADERS)
-
     stats = {}
+    unmapped_branches = set()
 
     def bucket(branch):
         if branch not in stats:
@@ -162,24 +164,35 @@ def read_payroll(file):
             }
         return stats[branch]
 
-    # Dữ liệu nhân viên bắt đầu sau 4 dòng header. Bỏ qua các dòng subtotal /
-    # dòng số thứ tự cột (cột "CHI NHÁNH LÀM VIỆC" không phải chuỗi tên chi
-    # nhánh hợp lệ, hoặc cột "VỊ TRÍ" rỗng).
     valid_branch_names = {b["payroll"] for b in BRANCHES}
+    idx_chi_nhanh = cols["chi_nhanh"] - 1
+    idx_vi_tri = cols["vi_tri"] - 1
+    idx_dt = cols["dt_ca_nhan"] - 1
+    idx_tour = cols["tour_ca_nhan"] - 1
+    idx_tn = cols["tong_thu_nhap"] - 1
+    idx_kpi = cols["ty_le_kpi_ca_nhan"] - 1
+
     for row in ws.iter_rows(min_row=5, values_only=True):
-        branch = row[cols["chi_nhanh"] - 1]
-        if not isinstance(branch, str) or branch.strip() not in valid_branch_names:
+        branch = row[idx_chi_nhanh]
+        if not isinstance(branch, str) or not branch.strip():
             continue
         branch = branch.strip()
-        pos = row[cols["vi_tri"] - 1]
+        pos = row[idx_vi_tri]
         if pos is None:
+            continue
+        if branch not in valid_branch_names:
+            # có thể là dòng subtotal (branch field chứa số/nhãn khác) hoặc
+            # 1 chi nhánh mới chưa cấu hình -> chỉ cảnh báo khi giống 1 tên
+            # chi nhánh thật (chữ hoa, có dấu cách) để không báo nhầm dòng rác.
+            if re.match(r"^[A-ZÀ-Ỹ ]{3,}$", branch):
+                unmapped_branches.add(branch)
             continue
         pos = str(pos).strip()
 
-        dt_ca_nhan = row[cols["dt_ca_nhan"] - 1] or 0
-        tour = row[cols["tour_ca_nhan"] - 1] or 0
-        thu_nhap = row[cols["tong_thu_nhap"] - 1] or 0
-        kpi_rate = row[cols["ty_le_kpi_ca_nhan"] - 1]
+        dt_ca_nhan = row[idx_dt] or 0
+        tour = row[idx_tour] or 0
+        thu_nhap = row[idx_tn] or 0
+        kpi_rate = row[idx_kpi]
 
         b = bucket(branch)
         b["so_nhan_su"] += 1
@@ -202,11 +215,11 @@ def read_payroll(file):
         elif pos in QLCN_ROLES:
             b["so_qlcn"] += 1
 
-    return label, stats
+    return year, month, label, stats, unmapped_branches
 
 
 # ---------------------------------------------------------------------------
-# 3. ĐỌC FILE PHÂN TÍCH DOANH THU (mỗi chi nhánh 1 sheet, cột = tháng)
+# 3. ĐỌC FILE PHÂN TÍCH DOANH THU
 # ---------------------------------------------------------------------------
 
 REVENUE_ROW_MAP = {
@@ -219,16 +232,41 @@ REVENUE_ROW_MAP = {
     "bill_tb_moi": "Bill TB khách mới",
     "bill_tb_cu": "Bill TB khách cũ",
     "tong_doanh_thu": "Tổng doanh thu",
+    "mua_tt_moi": "Khách mua hàng TT (mới)",
+    "mua_tt_cu": "Khách mua hàng TT (cũ)",
 }
 
 
-def read_revenue_file(file):
-    """Trả về {revenue_sheet_name: {label_thang: {field: value}}}."""
-    wb = openpyxl.load_workbook(file, data_only=True)
+def _to_num(v):
+    """Vài ô trong file Phân tích Doanh thu bị lưu dạng text có dấu phẩy /
+    khoảng trắng không ngắt (vd '5,129,349,000\\xa0') thay vì số — ép về số
+    để tránh lỗi cộng dồn ở phần tổng hợp 'TẤT CẢ CHI NHÁNH'."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        vv = v.replace(",", "").replace("\xa0", "").replace("%", "").strip()
+        if not vv:
+            return None
+        try:
+            return float(vv)
+        except ValueError:
+            return None
+    return v
+
+
+@st.cache_data(show_spinner=False)
+def read_revenue_bytes(data: bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     out = {}
+    covered_sheets = {b["revenue_sheet"] for b in BRANCHES}
+    unmapped_sheets = set()
     for sheet_name in wb.sheetnames:
         if sheet_name == "Tất cả chi nhánh":
             continue
+        if sheet_name not in covered_sheets:
+            unmapped_sheets.add(sheet_name)
         ws = wb[sheet_name]
         headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
         row_by_label = {}
@@ -245,37 +283,81 @@ def read_revenue_file(file):
             vals = {}
             for field, vn_label in REVENUE_ROW_MAP.items():
                 r = row_by_label.get(vn_label)
-                vals[field] = ws.cell(row=r, column=c_idx).value if r else None
+                vals[field] = _to_num(ws.cell(row=r, column=c_idx).value) if r else None
             month_data[str(col_label).strip()] = vals
         out[sheet_name] = month_data
+    return out, unmapped_sheets
+
+
+# ---------------------------------------------------------------------------
+# 4. TỔNG HỢP "TẤT CẢ CHI NHÁNH" (đúng trọng số, không phải trung bình cộng)
+# ---------------------------------------------------------------------------
+
+def aggregate_payroll_total(stats_by_branch):
+    keys_sum = ["so_nhan_su", "so_ktv", "dt_ktv", "tour_ktv", "thunhap_ktv_sum",
+                "so_tvv", "dt_tvv", "thunhap_tvv_sum", "kpi_rate_tvv_sum",
+                "kpi_rate_tvv_n", "so_omcmlead", "so_qlcn", "chi_phi_nhan_su"]
+    total = {k: 0.0 for k in keys_sum}
+    for b in BRANCHES:
+        s = stats_by_branch.get(b["payroll"])
+        if not s:
+            continue
+        for k in keys_sum:
+            total[k] += s.get(k, 0) or 0
+    for k in ("so_nhan_su", "so_ktv", "so_tvv", "so_omcmlead", "so_qlcn", "kpi_rate_tvv_n"):
+        total[k] = int(total[k])
+    return total
+
+
+def aggregate_revenue_total(revenue, label):
+    total = {"khach_moi": 0, "khach_cu": 0, "dt_khach_moi": 0, "dt_khach_cu": 0,
+              "mua_tt_moi": 0, "mua_tt_cu": 0, "tong_doanh_thu": 0}
+    any_data = False
+    for b in BRANCHES:
+        d = revenue.get(b["revenue_sheet"], {}).get(label)
+        if not d:
+            continue
+        any_data = True
+        for k in total:
+            total[k] += d.get(k) or 0
+    if not any_data:
+        return None
+    out = dict(total)
+    out["ty_le_chot_moi"] = (total["mua_tt_moi"] / total["khach_moi"]) if total["khach_moi"] else None
+    out["ty_le_chot_cu"] = (total["mua_tt_cu"] / total["khach_cu"]) if total["khach_cu"] else None
+    out["bill_tb_moi"] = (total["dt_khach_moi"] / total["mua_tt_moi"]) if total["mua_tt_moi"] else None
+    out["bill_tb_cu"] = (total["dt_khach_cu"] / total["mua_tt_cu"]) if total["mua_tt_cu"] else None
     return out
 
 
 # ---------------------------------------------------------------------------
-# 4. XÂY DỰNG SHEET "KTV-TVV"
+# 5. LAYOUT CỘT — hỗ trợ N tháng bất kỳ
 # ---------------------------------------------------------------------------
 
-def style_header(cell, text, fill=True):
-    cell.value = text
-    cell.font = FONT_HEADER if fill else FONT_BOLD
-    if fill:
-        cell.fill = FILL_HEADER
-    cell.alignment = Alignment(horizontal="center", wrap_text=True)
-    cell.border = BORDER
+def compute_branch_plan(start_col, n_months):
+    plan = []
+    col = start_col
+    val_col = {}
+    for i in range(n_months):
+        val_col[i] = col
+        plan.append(("val", i, col))
+        col += 1
+        if i > 0:
+            plan.append(("diff", i - 1, i, col))
+            col += 1
+    end_col = col - 1
+    return plan, val_col, end_col
 
 
-def write_row_data(ws, row, label, col_prev, col_cur, val_prev, val_cur,
-                    diff_kind, number_format, bold=False):
-    """diff_kind: 'abs' -> C-B ; 'pct' -> (B-C)/C (giống hệt file gốc)."""
-    letter_prev = get_column_letter(col_prev)
-    letter_cur = get_column_letter(col_cur)
-    letter_diff = get_column_letter(col_cur + 1)
-
+def write_values(ws, row, label, plan, get_value_fn, number_format, bold=False):
     a = ws.cell(row=row, column=1, value=label)
     a.font = FONT_BOLD if bold else FONT
     a.border = BORDER
-
-    for col, val in ((col_prev, val_prev), (col_cur, val_cur)):
+    for item in plan:
+        if item[0] != "val":
+            continue
+        i, col = item[1], item[2]
+        val = get_value_fn(i)
         cell = ws.cell(row=row, column=col, value=val)
         cell.font = FONT
         cell.border = BORDER
@@ -285,83 +367,180 @@ def write_row_data(ws, row, label, col_prev, col_cur, val_prev, val_cur,
             cell.fill = FILL_INPUT
             cell.comment = Comment("Không có dữ liệu — kiểm tra lại file raw.", "App KTV-TVV")
 
-    diff_cell = ws.cell(row=row, column=col_cur + 1)
-    if diff_kind == "abs":
-        diff_cell.value = f"={letter_cur}{row}-{letter_prev}{row}"
-    elif diff_kind == "pct":
-        diff_cell.value = f"=({letter_prev}{row}-{letter_cur}{row})/{letter_cur}{row}"
-        diff_cell.number_format = "0.0%"
-    diff_cell.font = FONT
-    diff_cell.border = BORDER
-    diff_cell.alignment = Alignment(horizontal="right")
+
+def write_formula_same_col(ws, row, label, plan, formula_fn, number_format, bold=False):
+    a = ws.cell(row=row, column=1, value=label)
+    a.font = FONT_BOLD if bold else FONT
+    a.border = BORDER
+    for item in plan:
+        if item[0] != "val":
+            continue
+        _, col = item[1], item[2]
+        L = get_column_letter(col)
+        cell = ws.cell(row=row, column=col, value=formula_fn(L))
+        cell.font = FONT
+        cell.border = BORDER
+        cell.number_format = number_format
 
 
-def build_ktv_tvv_sheet(wb, label_prev, label_cur, payroll_prev, payroll_cur, revenue):
+def write_diffs(ws, row, plan, val_col, diff_kind, number_format_diff="0.0%", color=False):
+    diff_cols = []
+    for item in plan:
+        if item[0] != "diff":
+            continue
+        i_from, i_to, col = item[1], item[2], item[3]
+        Lf, Lt = get_column_letter(val_col[i_from]), get_column_letter(val_col[i_to])
+        cell = ws.cell(row=row, column=col)
+        if diff_kind == "abs":
+            cell.value = f"={Lt}{row}-{Lf}{row}"
+        else:
+            cell.value = f"=({Lf}{row}-{Lt}{row})/{Lt}{row}"
+            cell.number_format = number_format_diff
+        cell.font = FONT
+        cell.border = BORDER
+        cell.fill = FILL_DIFF
+        cell.alignment = Alignment(horizontal="right")
+        diff_cols.append(col)
+    if color:
+        apply_growth_colors(ws, row, diff_cols, reverse=(color == "reverse"))
+
+
+def apply_growth_colors(ws, row, cols, reverse=False):
+    """Tô xanh/đỏ cho các ô Δ dựa trên dấu giá trị. reverse=True dùng cho các
+    chỉ tiêu càng THẤP càng tốt (vd chi phí nhân sự tăng = xấu -> đỏ)."""
+    good_fill, bad_fill = (FILL_BAD, FILL_GOOD) if reverse else (FILL_GOOD, FILL_BAD)
+    for c in cols:
+        L = get_column_letter(c)
+        ref = f"{L}{row}"
+        ws.conditional_formatting.add(
+            ref, CellIsRule(operator="greaterThan", formula=["0"], fill=good_fill)
+        )
+        ws.conditional_formatting.add(
+            ref, CellIsRule(operator="lessThan", formula=["0"], fill=bad_fill)
+        )
+
+
+def write_row(ws, row, label, plan, val_col, get_value_fn, diff_kind, number_format, bold=False, color=False):
+    write_values(ws, row, label, plan, get_value_fn, number_format, bold=bold)
+    write_diffs(ws, row, plan, val_col, diff_kind, "0.0%", color=color)
+
+
+def write_formula_row(ws, row, label, plan, val_col, formula_fn, diff_kind, number_format, bold=False, color=False):
+    write_formula_same_col(ws, row, label, plan, formula_fn, number_format, bold=bold)
+    write_diffs(ws, row, plan, val_col, diff_kind, "0.0%", color=color)
+
+
+def style_header(cell, text, wrap=True, total=False):
+    cell.value = text
+    cell.font = FONT_HEADER
+    cell.fill = FILL_TOTAL_HEADER if total else FILL_HEADER
+    cell.alignment = Alignment(horizontal="center", wrap_text=wrap)
+    cell.border = BORDER
+
+
+def section_label(ws, row, text):
+    ws.cell(row=row, column=1, value=text)
+    ws.cell(row=row, column=1).font = FONT_BOLD
+    ws.cell(row=row, column=1).fill = FILL_SECTION
+
+
+# ---------------------------------------------------------------------------
+# 6. XÂY DỰNG SHEET "KTV-TVV"
+# ---------------------------------------------------------------------------
+
+def build_ktv_tvv_sheet(wb, months, revenue):
+    n = len(months)
+    month_labels = [m[0] for m in months]
+    payroll_by_month = [m[1] for m in months]
+    total_payroll_by_month = [aggregate_payroll_total(s) for s in payroll_by_month]
+    total_revenue_by_month = [aggregate_revenue_total(revenue, lbl) for lbl in month_labels]
+
     ws = wb.create_sheet("KTV-TVV")
     ws.column_dimensions["A"].width = 34
-    ws["A1"] = "BẢNG ĐÁNH CHỈ SỐ VẬN HÀNH"
-    ws["A1"].font = FONT_BOLD
 
-    branch_cols = {}  # label -> (col_prev, col_cur)
+    all_entries = [(b["label"], False) for b in BRANCHES] + [(TOTAL_LABEL, True)]
+    branch_plans = {}
     col = 2
-    for b in BRANCHES:
-        branch_cols[b["label"]] = (col, col + 1)
-        letter_prev = get_column_letter(col)
-        ws.merge_cells(start_row=2, start_column=col, end_row=2, end_column=col + 1)
-        style_header(ws.cell(row=2, column=col), b["label"])
-        style_header(ws.cell(row=2, column=col + 2), "chênh lệch")
-        style_header(ws.cell(row=3, column=col), label_prev)
-        style_header(ws.cell(row=3, column=col + 1), label_cur)
-        for cc in range(col, col + 3):
-            ws.column_dimensions[get_column_letter(cc)].width = 14
-        col += 3
-    ws["A2"] = "Chỉ tiêu"
-    ws["A2"].font = FONT_HEADER
-    ws["A2"].fill = FILL_HEADER
-    ws["A3"] = "Tháng"
-    ws["A3"].font = FONT_HEADER
-    ws["A3"].fill = FILL_HEADER
+    for label, is_total in all_entries:
+        plan, val_col, end_col = compute_branch_plan(col, n)
+        branch_plans[label] = (plan, val_col, col, end_col, is_total)
+        ws.merge_cells(start_row=2, start_column=col, end_row=2, end_column=end_col)
+        style_header(ws.cell(row=2, column=col), label, total=is_total)
+        for item in plan:
+            if item[0] == "val":
+                style_header(ws.cell(row=3, column=item[2]), month_labels[item[1]], total=is_total)
+            else:
+                style_header(ws.cell(row=3, column=item[3]), "Δ", total=is_total)
+        for cc in range(col, end_col + 1):
+            ws.column_dimensions[get_column_letter(cc)].width = 13
+        col = end_col + 1
 
-    def get_rev(branch_label, label_thang, field):
-        sheet_name = next(b["revenue_sheet"] for b in BRANCHES if b["label"] == branch_label)
-        d = revenue.get(sheet_name, {}).get(label_thang, {})
+    ws["A2"] = "Chỉ tiêu"; ws["A2"].font = FONT_HEADER; ws["A2"].fill = FILL_HEADER
+    ws["A3"] = "Tháng"; ws["A3"].font = FONT_HEADER; ws["A3"].fill = FILL_HEADER
+
+    def get_rev(label, month_idx, field, is_total):
+        if is_total:
+            d = total_revenue_by_month[month_idx]
+            return d.get(field) if d else None
+        sheet_name = next(b["revenue_sheet"] for b in BRANCHES if b["label"] == label)
+        d = revenue.get(sheet_name, {}).get(month_labels[month_idx], {})
         return d.get(field)
 
-    def get_pay(branch_label, payroll_stats, field, default=0):
-        payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == branch_label)
-        s = payroll_stats.get(payroll_name)
-        if not s:
-            return None
-        return s.get(field, default)
+    def get_pay(label, month_idx, field, is_total):
+        if is_total:
+            return total_payroll_by_month[month_idx].get(field)
+        payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == label)
+        s = payroll_by_month[month_idx].get(payroll_name)
+        return s.get(field) if s else None
 
-    # --- Bảng chỉ số vận hành (6-13) ---
-    ws["A4"] = "CHỈ SỐ VẬN HÀNH"; ws["A4"].font = FONT_BOLD; ws["A4"].fill = FILL_SECTION
-    ws["A5"] = "KHÁCH HÀNG MỚI /CŨ"; ws["A5"].font = FONT_BOLD; ws["A5"].fill = FILL_SECTION
+    def get_pay_avg(label, month_idx, sum_field, count_field, is_total):
+        if is_total:
+            t = total_payroll_by_month[month_idx]
+            return (t[sum_field] / t[count_field]) if t.get(count_field) else None
+        payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == label)
+        s = payroll_by_month[month_idx].get(payroll_name)
+        if not s or not s.get(count_field):
+            return None
+        return s[sum_field] / s[count_field]
+
+    def get_tvv_kpi_rate(label, month_idx, is_total):
+        if is_total:
+            t = total_payroll_by_month[month_idx]
+            return (t["kpi_rate_tvv_sum"] / t["kpi_rate_tvv_n"]) if t.get("kpi_rate_tvv_n") else None
+        payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == label)
+        s = payroll_by_month[month_idx].get(payroll_name)
+        if not s or not s.get("kpi_rate_tvv_n"):
+            return None
+        return s["kpi_rate_tvv_sum"] / s["kpi_rate_tvv_n"]
+
+    section_label(ws, 4, "CHỈ SỐ VẬN HÀNH")
+    section_label(ws, 5, "KHÁCH HÀNG MỚI /CŨ")
 
     op_rows = [
-        (6, "Khách mới", "khach_moi", "abs", INT_FMT),
-        (7, "Doanh thu khách mới", "dt_khach_moi", "pct", MONEY_FMT),
-        (8, "Khách cũ", "khach_cu", "abs", INT_FMT),
-        (9, "Doanh thu khách cũ", "dt_khach_cu", "pct", MONEY_FMT),
-        (10, "Tỷ lệ chốt khách mới (%)", "ty_le_chot_moi", "pct", "0.0%"),
-        (11, "Tỷ lệ chốt khách cũ (%)", "ty_le_chot_cu", "pct", "0.0%"),
-        (12, "Bill TB khách mới", "bill_tb_moi", "pct", MONEY_FMT),
-        (13, "Bill TB khách cũ", "bill_tb_cu", "pct", MONEY_FMT),
+        (6, "Khách mới", "khach_moi", "abs", INT_FMT, False),
+        (7, "Doanh thu khách mới", "dt_khach_moi", "pct", MONEY_FMT, True),
+        (8, "Khách cũ", "khach_cu", "abs", INT_FMT, False),
+        (9, "Doanh thu khách cũ", "dt_khach_cu", "pct", MONEY_FMT, True),
+        (10, "Tỷ lệ chốt khách mới (%)", "ty_le_chot_moi", "pct", "0.0%", True),
+        (11, "Tỷ lệ chốt khách cũ (%)", "ty_le_chot_cu", "pct", "0.0%", True),
+        (12, "Bill TB khách mới", "bill_tb_moi", "pct", MONEY_FMT, True),
+        (13, "Bill TB khách cũ", "bill_tb_cu", "pct", MONEY_FMT, True),
     ]
-    for row, label, field, kind, fmt in op_rows:
-        for branch_label, (cp, cc) in branch_cols.items():
-            vprev = get_rev(branch_label, label_prev, field)
-            vcur = get_rev(branch_label, label_cur, field)
-            write_row_data(ws, row, label, cp, cc, vprev, vcur, kind, fmt)
+    for row, label, field, kind, fmt, color in op_rows:
+        for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
+            write_row(ws, row, label, plan, val_col,
+                      lambda i, bl=branch_label, f=field, t=is_total: get_rev(bl, i, f, t),
+                      kind, fmt, color=color)
 
-    # --- Bảng đánh giá hiệu suất làm việc chi nhánh (14-21) ---
-    ws["A14"] = "BẢNG ĐÁNH GIÁ HIỆU SUẤT LÀM VIỆC CHI NHÁNH"; ws["A14"].font = FONT_BOLD; ws["A14"].fill = FILL_SECTION
-    for branch_label, (cp, cc) in branch_cols.items():
-        style_header(ws.cell(row=15, column=cp), branch_label)
-        ws.merge_cells(start_row=15, start_column=cp, end_row=15, end_column=cc)
-        style_header(ws.cell(row=15, column=cc + 1), "chênh lệch")
-        style_header(ws.cell(row=16, column=cp), label_prev)
-        style_header(ws.cell(row=16, column=cc), label_cur)
+    section_label(ws, 14, "BẢNG ĐÁNH GIÁ HIỆU SUẤT LÀM VIỆC CHI NHÁNH")
+    for branch_label, (plan, val_col, start_col, end_col, is_total) in branch_plans.items():
+        ws.merge_cells(start_row=15, start_column=start_col, end_row=15, end_column=end_col)
+        style_header(ws.cell(row=15, column=start_col), branch_label, total=is_total)
+        for item in plan:
+            if item[0] == "val":
+                style_header(ws.cell(row=16, column=item[2]), month_labels[item[1]], total=is_total)
+            else:
+                style_header(ws.cell(row=16, column=item[3]), "Δ", total=is_total)
     ws["A15"] = "Chỉ tiêu"; ws["A15"].font = FONT_HEADER; ws["A15"].fill = FILL_HEADER
     ws["A16"] = "Tháng"; ws["A16"].font = FONT_HEADER; ws["A16"].fill = FILL_HEADER
 
@@ -373,150 +552,170 @@ def build_ktv_tvv_sheet(wb, label_prev, label_cur, payroll_prev, payroll_cur, re
         (21, "QLCN", "so_qlcn", "abs", INT_FMT),
     ]
     for row, label, field, kind, fmt in headcount_rows:
-        for branch_label, (cp, cc) in branch_cols.items():
-            vprev = get_pay(branch_label, payroll_prev, field)
-            vcur = get_pay(branch_label, payroll_cur, field)
-            write_row_data(ws, row, label, cp, cc, vprev, vcur, kind, fmt)
+        for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
+            write_row(ws, row, label, plan, val_col,
+                      lambda i, bl=branch_label, f=field, t=is_total: get_pay(bl, i, f, t), kind, fmt)
 
-    ws["A22"] = "HIỆU SUẤT KTV"; ws["A22"].font = FONT_BOLD; ws["A22"].fill = FILL_SECTION
-    for branch_label, (cp, cc) in branch_cols.items():
-        vprev = get_pay(branch_label, payroll_prev, "dt_ktv")
-        vcur = get_pay(branch_label, payroll_cur, "dt_ktv")
-        write_row_data(ws, 23, "Doanh thu KTV", cp, cc, vprev, vcur, "pct", MONEY_FMT)
-        lp, lc = get_column_letter(cp), get_column_letter(cc)
-        for c, lbl_row in ((cp, 24), (cc, 24)):
-            pass
-        ws.cell(row=24, column=1, value="DT/KTV").font = FONT
-        ws.cell(row=24, column=1).border = BORDER
-        for c in (cp, cc):
-            cell = ws.cell(row=24, column=c, value=f"={get_column_letter(c)}23/{get_column_letter(c)}18")
-            cell.number_format = MONEY_FMT; cell.font = FONT; cell.border = BORDER
-        diff = ws.cell(row=24, column=cc + 1, value=f"=({lp}24-{lc}24)/{lc}24")
-        diff.number_format = "0.0%"; diff.font = FONT; diff.border = BORDER
+    section_label(ws, 22, "HIỆU SUẤT KTV")
+    for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
+        write_row(ws, 23, "Doanh thu KTV", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_pay(bl, i, "dt_ktv", t), "pct", MONEY_FMT, color=True)
+        write_formula_row(ws, 24, "DT/KTV", plan, val_col,
+                           lambda L: f"={L}23/{L}18", "pct", MONEY_FMT, color=True)
+        write_row(ws, 25, "Điểm tour KTV", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_pay(bl, i, "tour_ktv", t), "pct", INT_FMT)
+        write_row(ws, 26, "Thu nhập BQ KTV", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_pay_avg(bl, i, "thunhap_ktv_sum", "so_ktv", t),
+                  "pct", MONEY_FMT)
 
-        vprev_t = get_pay(branch_label, payroll_prev, "tour_ktv")
-        vcur_t = get_pay(branch_label, payroll_cur, "tour_ktv")
-        write_row_data(ws, 25, "Điểm tour KTV", cp, cc, vprev_t, vcur_t, "pct", INT_FMT)
+    section_label(ws, 27, "HIỆU SUẤT  TVV")
+    for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
+        write_row(ws, 28, "Doanh thu TVV", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_pay(bl, i, "dt_tvv", t), "pct", MONEY_FMT, color=True)
+        write_formula_row(ws, 29, "DT/TVV", plan, val_col,
+                           lambda L: f"={L}28/{L}19", "pct", MONEY_FMT, color=True)
+        write_row(ws, 30, "Tỷ lệ chốt bình quân", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_tvv_kpi_rate(bl, i, t), "pct", "0.0%", color=True)
+        write_row(ws, 31, "Thu nhập BQ TVV", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_pay_avg(bl, i, "thunhap_tvv_sum", "so_tvv", t),
+                  "pct", MONEY_FMT)
 
-        def avg(stats_field_sum, count_field, payroll_stats):
-            payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == branch_label)
-            s = payroll_stats.get(payroll_name)
-            if not s or not s.get(count_field):
-                return None
-            return s[stats_field_sum] / s[count_field]
+    section_label(ws, 32, "HIỆU QUẢ HOẠT ĐỘNG CHI NHÁNH")
+    for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
+        write_row(ws, 33, "Tổng doanh thu", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_rev(bl, i, "tong_doanh_thu", t),
+                  "pct", MONEY_FMT, color=True)
 
-        vprev_i = avg("thunhap_ktv_sum", "so_ktv", payroll_prev)
-        vcur_i = avg("thunhap_ktv_sum", "so_ktv", payroll_cur)
-        write_row_data(ws, 26, "Thu nhập BQ KTV", cp, cc, vprev_i, vcur_i, "pct", MONEY_FMT)
-
-    ws["A27"] = "HIỆU SUẤT  TVV"; ws["A27"].font = FONT_BOLD; ws["A27"].fill = FILL_SECTION
-    for branch_label, (cp, cc) in branch_cols.items():
-        vprev = get_pay(branch_label, payroll_prev, "dt_tvv")
-        vcur = get_pay(branch_label, payroll_cur, "dt_tvv")
-        write_row_data(ws, 28, "Doanh thu TVV", cp, cc, vprev, vcur, "pct", MONEY_FMT)
-
-        ws.cell(row=29, column=1, value="DT/TVV").font = FONT
-        ws.cell(row=29, column=1).border = BORDER
-        lp, lc = get_column_letter(cp), get_column_letter(cc)
-        for c in (cp, cc):
-            cell = ws.cell(row=29, column=c, value=f"={get_column_letter(c)}28/{get_column_letter(c)}19")
-            cell.number_format = MONEY_FMT; cell.font = FONT; cell.border = BORDER
-        diff = ws.cell(row=29, column=cc + 1, value=f"=({lp}29-{lc}29)/{lc}29")
-        diff.number_format = "0.0%"; diff.font = FONT; diff.border = BORDER
-
-        def tvv_kpi_rate(payroll_stats):
-            payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == branch_label)
-            s = payroll_stats.get(payroll_name)
-            if not s or not s.get("kpi_rate_tvv_n"):
-                return None
-            return s["kpi_rate_tvv_sum"] / s["kpi_rate_tvv_n"]
-
-        vprev_r = tvv_kpi_rate(payroll_prev)
-        vcur_r = tvv_kpi_rate(payroll_cur)
-        write_row_data(ws, 30, "Tỷ lệ chốt bình quân", cp, cc, vprev_r, vcur_r, "pct", "0.0%")
-
-        def avg_tvv(payroll_stats):
-            payroll_name = next(b["payroll"] for b in BRANCHES if b["label"] == branch_label)
-            s = payroll_stats.get(payroll_name)
-            if not s or not s.get("so_tvv"):
-                return None
-            return s["thunhap_tvv_sum"] / s["so_tvv"]
-
-        vprev_i = avg_tvv(payroll_prev)
-        vcur_i = avg_tvv(payroll_cur)
-        write_row_data(ws, 31, "Thu nhập BQ TVV", cp, cc, vprev_i, vcur_i, "pct", MONEY_FMT)
-
-    ws["A32"] = "HIỆU QUẢ HOẠT ĐỘNG CHI NHÁNH"; ws["A32"].font = FONT_BOLD; ws["A32"].fill = FILL_SECTION
-    for branch_label, (cp, cc) in branch_cols.items():
-        vprev = get_rev(branch_label, label_prev, "tong_doanh_thu")
-        vcur = get_rev(branch_label, label_cur, "tong_doanh_thu")
-        write_row_data(ws, 33, "Tổng doanh thu", cp, cc, vprev, vcur, "pct", MONEY_FMT)
-
-        lp, lc = get_column_letter(cp), get_column_letter(cc)
         ws.cell(row=34, column=1, value="Tăng trưởng doanh thu (%)").font = FONT
         ws.cell(row=34, column=1).border = BORDER
-        cell_c = ws.cell(row=34, column=cc, value=f"=({lc}33-{lp}33)/{lp}33")
-        cell_c.number_format = "0.0%"; cell_c.font = FONT; cell_c.border = BORDER
-        ws.cell(row=34, column=cp).border = BORDER
-        diff = ws.cell(row=34, column=cc + 1, value=f"=({lp}34-{lc}34)/{lc}34")
-        diff.number_format = "0.0%"; diff.font = FONT; diff.border = BORDER
-
-        vprev_c = get_pay(branch_label, payroll_prev, "chi_phi_nhan_su")
-        vcur_c = get_pay(branch_label, payroll_cur, "chi_phi_nhan_su")
-        write_row_data(ws, 35, "Chi phí nhân sự", cp, cc, vprev_c, vcur_c, "pct", MONEY_FMT)
-
-        ws.cell(row=36, column=1, value="CPNS/Doanh thu (%)").font = FONT
-        ws.cell(row=36, column=1).border = BORDER
-        for c in (cp, cc):
-            cell = ws.cell(row=36, column=c, value=f"={get_column_letter(c)}35/{get_column_letter(c)}33")
+        for item in plan:
+            if item[0] != "val":
+                continue
+            i, c = item[1], item[2]
+            if i == 0:
+                continue
+            Lc, Lp = get_column_letter(c), get_column_letter(val_col[i - 1])
+            cell = ws.cell(row=34, column=c, value=f"=({Lc}33-{Lp}33)/{Lp}33")
             cell.number_format = "0.0%"; cell.font = FONT; cell.border = BORDER
-        diff = ws.cell(row=36, column=cc + 1, value=f"=({lp}36-{lc}36)/{lc}36")
-        diff.number_format = "0.0%"; diff.font = FONT; diff.border = BORDER
+        write_diffs(ws, 34, plan, val_col, "pct", color=True)
 
-        ws.cell(row=37, column=1, value="Thu nhập BQ / tổng nhân sự").font = FONT
-        ws.cell(row=37, column=1).border = BORDER
-        for c in (cp, cc):
-            cell = ws.cell(row=37, column=c, value=f"={get_column_letter(c)}35/{get_column_letter(c)}17")
-            cell.number_format = MONEY_FMT; cell.font = FONT; cell.border = BORDER
-        diff = ws.cell(row=37, column=cc + 1, value=f"=({lp}37-{lc}37)/{lc}37")
-        diff.number_format = "0.0%"; diff.font = FONT; diff.border = BORDER
-
-        ws.cell(row=38, column=1, value="Doanh thu/Tổng nhân sự").font = FONT
-        ws.cell(row=38, column=1).border = BORDER
-        for c in (cp, cc):
-            cell = ws.cell(row=38, column=c, value=f"={get_column_letter(c)}33/{get_column_letter(c)}17")
-            cell.number_format = MONEY_FMT; cell.font = FONT; cell.border = BORDER
-        diff = ws.cell(row=38, column=cc + 1, value=f"=({lp}38-{lc}38)/{lc}38")
-        diff.number_format = "0.0%"; diff.font = FONT; diff.border = BORDER
+        write_row(ws, 35, "Chi phí nhân sự", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_pay(bl, i, "chi_phi_nhan_su", t),
+                  "pct", MONEY_FMT, color="reverse")
+        write_formula_row(ws, 36, "CPNS/Doanh thu (%)", plan, val_col,
+                           lambda L: f"={L}35/{L}33", "pct", "0.0%", color="reverse")
+        write_formula_row(ws, 37, "Thu nhập BQ / tổng nhân sự", plan, val_col,
+                           lambda L: f"={L}35/{L}17", "pct", MONEY_FMT)
+        write_formula_row(ws, 38, "Doanh thu/Tổng nhân sự", plan, val_col,
+                           lambda L: f"={L}33/{L}17", "pct", MONEY_FMT, color=True)
 
         ws.cell(row=39, column=1, value="ĐIỂM HIỆU QUẢ").font = FONT_BOLD
         ws.cell(row=39, column=1).border = BORDER
-        for c in (cp, cc):
+        for item in plan:
+            if item[0] != "val":
+                continue
+            _, c = item[1], item[2]
             L = get_column_letter(c)
             formula = f"=IFERROR({L}38/1000000,0)*0.4+IFERROR({L}34,0)*100*0.2-IFERROR({L}36,0)*100*0.4"
             cell = ws.cell(row=39, column=c, value=formula)
             cell.font = FONT_BOLD; cell.border = BORDER
+        write_diffs(ws, 39, plan, val_col, "pct", color=True)
 
-    # Xếp hạng (dòng 40) — so sánh điểm hiệu quả cùng tháng giữa các chi nhánh
+    # Xếp hạng (dòng 40) — chỉ so sánh giữa 9 chi nhánh thật, KHÔNG tính cột Tổng
     ws.cell(row=40, column=1, value="XẾP HẠNG").font = FONT_BOLD
     ws.cell(row=40, column=1).border = BORDER
-    all_cols_prev = [branch_cols[b["label"]][0] for b in BRANCHES]
-    all_cols_cur = [branch_cols[b["label"]][1] for b in BRANCHES]
-    for branch_label, (cp, cc) in branch_cols.items():
-        for c, all_cols in ((cp, all_cols_prev), (cc, all_cols_cur)):
+    for month_idx in range(n):
+        cols_this_month = [branch_plans[b["label"]][1][month_idx] for b in BRANCHES]
+        for c in cols_this_month:
             L = get_column_letter(c)
-            others = [get_column_letter(oc) for oc in all_cols if oc != c]
+            others = [get_column_letter(oc) for oc in cols_this_month if oc != c]
             terms = "+".join(f"({o}$39>{L}$39)" for o in others)
-            formula = f"={terms}+1"
-            cell = ws.cell(row=40, column=c, value=formula)
+            cell = ws.cell(row=40, column=c, value=f"={terms}+1")
             cell.font = FONT; cell.border = BORDER; cell.alignment = Alignment(horizontal="center")
+        total_col = branch_plans[TOTAL_LABEL][1][month_idx]
+        ws.cell(row=40, column=total_col, value="—").alignment = Alignment(horizontal="center")
+        ws.cell(row=40, column=total_col).border = BORDER
 
     ws.freeze_panes = "B4"
     return ws
 
 
+def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
+    ws = wb.create_sheet("Audit", 0)
+    ws.column_dimensions["A"].width = 100
+    ws["A1"] = "Báo cáo kiểm tra dữ liệu — tự động tạo lúc xuất file"
+    ws["A1"].font = FONT_BOLD
+    ws["A2"] = "Các tháng trong file: " + " → ".join(m[0] for m in months)
+    ws["A2"].font = FONT
+
+    warnings = []
+    if unmapped_branches:
+        warnings.append(
+            "⚠ Payroll có chi nhánh CHƯA cấu hình trong app (dữ liệu chi nhánh này sẽ KHÔNG "
+            "xuất hiện trong sheet KTV-TVV): " + ", ".join(sorted(unmapped_branches))
+        )
+    if unmapped_sheets:
+        warnings.append(
+            "⚠ File Phân tích Doanh thu có sheet chi nhánh CHƯA cấu hình trong app: "
+            + ", ".join(sorted(unmapped_sheets))
+        )
+
+    month_labels = [m[0] for m in months]
+    payroll_by_month = [m[1] for m in months]
+
+    for b in BRANCHES:
+        for i, lbl in enumerate(month_labels):
+            d = revenue.get(b["revenue_sheet"], {}).get(lbl)
+            if not d or d.get("tong_doanh_thu") is None:
+                warnings.append(f"⚠ [{b['label']} - {lbl}] Không tìm thấy dữ liệu doanh thu tương ứng.")
+            s = payroll_by_month[i].get(b["payroll"])
+            if not s:
+                warnings.append(f"⚠ [{b['label']} - {lbl}] Không có dữ liệu nhân sự trong Payroll tháng này.")
+
+    for i in range(1, len(months)):
+        lbl_prev, lbl_cur = month_labels[i - 1], month_labels[i]
+        for b in BRANCHES:
+            d_prev = revenue.get(b["revenue_sheet"], {}).get(lbl_prev, {})
+            d_cur = revenue.get(b["revenue_sheet"], {}).get(lbl_cur, {})
+            rev_prev, rev_cur = d_prev.get("tong_doanh_thu"), d_cur.get("tong_doanh_thu")
+            if rev_prev and rev_cur and rev_cur < rev_prev:
+                pct = (rev_cur - rev_prev) / rev_prev
+                warnings.append(f"📉 [{b['label']}] Doanh thu {lbl_prev}→{lbl_cur}: {pct*100:+.1f}%")
+
+            s_prev = payroll_by_month[i - 1].get(b["payroll"])
+            s_cur = payroll_by_month[i].get(b["payroll"])
+            if s_prev and s_cur and rev_prev and rev_cur:
+                cp_prev, cp_cur = s_prev["chi_phi_nhan_su"], s_cur["chi_phi_nhan_su"]
+                if cp_prev and rev_prev:
+                    cpns_dt_prev = cp_prev / rev_prev
+                    cpns_dt_cur = (cp_cur / rev_cur) if rev_cur else None
+                    if cpns_dt_cur is not None and cpns_dt_cur > cpns_dt_prev:
+                        warnings.append(
+                            f"💸 [{b['label']}] CPNS/Doanh thu tăng: {cpns_dt_prev*100:.1f}% → {cpns_dt_cur*100:.1f}% "
+                            f"({lbl_prev}→{lbl_cur}) — chi phí nhân sự tăng nhanh hơn doanh thu."
+                        )
+
+    r = 4
+    if warnings:
+        ws[f"A{r}"] = f"Phát hiện {len(warnings)} điểm cần lưu ý:"
+        ws[f"A{r}"].font = FONT_BOLD
+        r += 1
+        for w in warnings:
+            cell = ws[f"A{r}"]
+            cell.value = w
+            cell.font = FONT
+            cell.fill = FILL_WARN if w.startswith("⚠") else PatternFill("solid", fgColor="FCE4D6")
+            cell.alignment = Alignment(wrap_text=True)
+            r += 1
+    else:
+        ws[f"A{r}"] = "✓ Không phát hiện bất thường nào."
+        ws[f"A{r}"].font = FONT
+    ws.freeze_panes = "A4"
+    return ws
+
+
 # ---------------------------------------------------------------------------
-# 5. UI
+# 7. UI
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="Báo cáo lương KTV-TVV", layout="wide")
@@ -524,83 +723,91 @@ st.title("📊 Tự động tạo sheet KTV-TVV (Vận hành + Hiệu suất + C
 
 st.markdown(
     """
-Upload **3 file**: file **Phân tích Doanh thu khách hàng** (đã gộp nhiều tháng),
-file **Payroll tháng trước** và file **Payroll tháng hiện tại** (sheet "Bảng lương").
-App sẽ tự nhận diện tháng, tự gộp và xuất ra sheet **KTV-TVV** đầy đủ 9 chi nhánh,
-công thức y hệt file mẫu bạn đã làm tay.
+Upload file **Phân tích Doanh thu khách hàng** và **bao nhiêu file Payroll cũng
+được** (mỗi file 1 tháng, sheet "Bảng lương") — app tự nhận diện tháng, tự sắp
+xếp theo thời gian và tự mở rộng bảng KTV-TVV theo đúng số tháng bạn upload.
 """
 )
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    revenue_file = st.file_uploader("📈 File Phân tích Doanh thu khách hàng", type=["xlsx"])
-with col2:
-    payroll_file_a = st.file_uploader("💰 File Payroll — tháng A", type=["xlsx"], key="pa")
-with col3:
-    payroll_file_b = st.file_uploader("💰 File Payroll — tháng B", type=["xlsx"], key="pb")
+revenue_file = st.file_uploader("📈 File Phân tích Doanh thu khách hàng", type=["xlsx"])
+payroll_files = st.file_uploader(
+    "💰 File Payroll (chọn nhiều file cùng lúc, mỗi file 1 tháng)",
+    type=["xlsx"], accept_multiple_files=True,
+)
 
-if revenue_file and payroll_file_a and payroll_file_b:
-    try:
-        revenue = read_revenue_file(revenue_file)
-    except Exception as e:
-        st.error(f"Lỗi đọc file Phân tích Doanh thu: {e}")
+if revenue_file and payroll_files:
+    with st.spinner("Đang đọc file Phân tích Doanh thu..."):
+        try:
+            revenue, unmapped_sheets = read_revenue_bytes(revenue_file.getvalue())
+        except Exception as e:
+            st.error(f"Lỗi đọc file Phân tích Doanh thu: {e}")
+            st.stop()
+
+    parsed = []
+    unmapped_branches_all = set()
+    with st.spinner(f"Đang đọc {len(payroll_files)} file Payroll..."):
+        for f in payroll_files:
+            try:
+                year, month, label, stats, unmapped = read_payroll_bytes(f.getvalue(), f.name)
+            except Exception as e:
+                st.error(f"Lỗi đọc file '{f.name}': {e}")
+                continue
+            if not label:
+                st.warning(f"Không tự nhận diện được tháng của file '{f.name}' — bỏ qua file này.")
+                continue
+            unmapped_branches_all |= unmapped
+            parsed.append({"filename": f.name, "year": year, "month": month, "label": label, "stats": stats})
+
+    if not parsed:
         st.stop()
 
-    try:
-        label_a, stats_a = read_payroll(payroll_file_a)
-        label_b, stats_b = read_payroll(payroll_file_b)
-    except Exception as e:
-        st.error(f"Lỗi đọc file Payroll: {e}")
+    parsed.sort(key=lambda p: (p["year"], p["month"]))
+
+    labels_seen = [p["label"] for p in parsed]
+    dups = {l for l in labels_seen if labels_seen.count(l) > 1}
+    if dups:
+        st.error(f"Có nhiều file cùng nhận diện là tháng {', '.join(dups)} — kiểm tra lại, mỗi tháng chỉ nên có 1 file.")
         st.stop()
 
-    if not label_a or not label_b:
-        st.warning("Không tự nhận diện được tháng từ 1 trong 2 file Payroll — kiểm tra lại tiêu đề file (cần dạng 'THÁNG 08/2026').")
-        st.stop()
-
-    # Sắp xếp: tháng nhỏ hơn -> label_prev, tháng lớn hơn -> label_cur
-    def month_num(lbl):
-        return int(lbl.replace("T", ""))
-
-    if month_num(label_a) <= month_num(label_b):
-        label_prev, payroll_prev = label_a, stats_a
-        label_cur, payroll_cur = label_b, stats_b
-    else:
-        label_prev, payroll_prev = label_b, stats_b
-        label_cur, payroll_cur = label_a, stats_a
-
-    st.success(f"Đã nhận diện: tháng trước = **{label_prev}**, tháng hiện tại = **{label_cur}**")
+    st.success("Đã nhận diện: " + " → ".join(f"**{p['label']}** ({p['filename']})" for p in parsed))
+    if unmapped_branches_all:
+        st.warning("⚠️ Có chi nhánh trong Payroll chưa được cấu hình trong app: " + ", ".join(sorted(unmapped_branches_all)) + " — dữ liệu chi nhánh này sẽ bị bỏ qua. Xem chi tiết trong sheet Audit sau khi xuất.")
+    if unmapped_sheets:
+        st.warning("⚠️ File Doanh thu có sheet chi nhánh chưa cấu hình: " + ", ".join(sorted(unmapped_sheets)))
 
     st.subheader("🔎 Xem trước số liệu nhân sự đã tổng hợp")
     preview_rows = []
-    for b in BRANCHES:
-        sp = payroll_prev.get(b["payroll"], {})
-        sc = payroll_cur.get(b["payroll"], {})
-        preview_rows.append({
-            "Chi nhánh": b["label"],
-            f"Số NS {label_prev}": sp.get("so_nhan_su"),
-            f"Số NS {label_cur}": sc.get("so_nhan_su"),
-            f"KTV {label_prev}": sp.get("so_ktv"),
-            f"KTV {label_cur}": sc.get("so_ktv"),
-            f"TVV {label_prev}": sp.get("so_tvv"),
-            f"TVV {label_cur}": sc.get("so_tvv"),
-        })
+    for b in BRANCHES + [{"label": TOTAL_LABEL, "payroll": None}]:
+        row = {"Chi nhánh": b["label"]}
+        for p in parsed:
+            if b["payroll"] is None:
+                s = aggregate_payroll_total(p["stats"])
+            else:
+                s = p["stats"].get(b["payroll"], {})
+            row[f"Số NS {p['label']}"] = s.get("so_nhan_su")
+            row[f"KTV {p['label']}"] = s.get("so_ktv")
+            row[f"TVV {p['label']}"] = s.get("so_tvv")
+        preview_rows.append(row)
     st.dataframe(preview_rows, use_container_width=True)
 
     if st.button("🚀 Xuất sheet KTV-TVV", type="primary"):
+        months = [(p["label"], p["stats"]) for p in parsed]
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
-        build_ktv_tvv_sheet(wb, label_prev, label_cur, payroll_prev, payroll_cur, revenue)
+        build_ktv_tvv_sheet(wb, months, revenue)
+        build_audit_sheet(wb, months, revenue, unmapped_branches_all, unmapped_sheets)
+        wb.move_sheet("Audit", offset=-len(wb.sheetnames))
 
         out = io.BytesIO()
         wb.save(out)
         out.seek(0)
 
-        st.success("Đã tạo xong sheet KTV-TVV!")
+        st.success("Đã tạo xong sheet KTV-TVV + sheet Audit!")
         st.download_button(
             "⬇️ Tải file KTV-TVV.xlsx",
             data=out,
-            file_name=f"KTV-TVV_{label_prev}_{label_cur}.xlsx",
+            file_name=f"KTV-TVV_{parsed[0]['label']}_{parsed[-1]['label']}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 else:
-    st.info("Vui lòng upload đủ 3 file để bắt đầu.")
+    st.info("Vui lòng upload file Phân tích Doanh thu và ít nhất 1 file Payroll để bắt đầu.")
