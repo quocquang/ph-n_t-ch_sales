@@ -19,6 +19,11 @@ hơn + chi tiết hơn):
      chưa cấu hình trong app (dữ liệu sẽ bị bỏ sót), chi nhánh thiếu dữ liệu
      doanh thu, chi nhánh có Chi phí nhân sự tăng nhanh hơn Doanh thu, chi
      nhánh sụt doanh thu so với tháng trước.
+  📺 DASHBOARD TRỰC TIẾP TRÊN WEB: ngay sau khi upload đủ file (không cần bấm
+     xuất Excel) — có bộ lọc tháng/chi nhánh, thẻ KPI, 5 tab biểu đồ (so sánh
+     chi nhánh, xu hướng theo tháng, hiệu suất KTV/TVV, chi phí & hiệu quả,
+     bảng chi tiết có thể tải CSV). Phần này chỉ hiển thị trên web, không ảnh
+     hưởng tới file Excel xuất ra.
 
 Toàn bộ công thức nghiệp vụ đã ĐỐI CHIẾU khớp chính xác 100% với file báo cáo
 lương T8/2026 (so với T7/2026) người dùng tự làm tay, trên toàn bộ 9 chi nhánh
@@ -28,7 +33,7 @@ LƯU Ý: vị trí cột "TỔNG THU NHẬP" và các cột khác trong "Bảng 
 giữa các tháng — app dò cột theo TÊN HEADER, không theo số thứ tự cột.
 
 Cách chạy:
-    pip install streamlit openpyxl
+    pip install streamlit openpyxl pandas plotly
     streamlit run app.py
 """
 
@@ -36,6 +41,9 @@ import io
 import re
 
 import openpyxl
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.comments import Comment
@@ -67,6 +75,7 @@ QLCN_ROLES = {"QLCN"}
 NEEDED_HEADERS = {
     "chi_nhanh": "CHI NHÁNH LÀM VIỆC",
     "vi_tri": "VỊ TRÍ",
+    "ho_ten": "HỌ VÀ TÊN",
     "dt_ca_nhan": "DOANH THU CÁ NHÂN TRƯỚC THUẾ PHÍ",
     "tour_ca_nhan": "TỔNG ĐIỂM TOUR CÁ NHÂN",
     "tong_thu_nhap": "TỔNG THU NHẬP",
@@ -135,11 +144,10 @@ def detect_payroll_month(title: str, filename: str):
 
 @st.cache_data(show_spinner=False)
 def read_payroll_bytes(data: bytes, filename: str):
-    """Đọc sheet 'Bảng lương' ở chế độ read_only (nhanh hơn nhiều lần so với
-    load bình thường trên file lớn nhiều sheet). Trả về:
-      (year, month, label, {branch: stats}, unmapped_branches_set)
-    unmapped_branches_set = tên chi nhánh xuất hiện trong Payroll nhưng CHƯA
-    có trong cấu hình BRANCHES của app (để cảnh báo, tránh bỏ sót âm thầm)."""
+    """Đọc sheet 'Bảng lương' ở chế độ read_only. Trả về:
+      (year, month, label, {branch: stats}, unmapped_branches_set, employees)
+    employees = list các dict {chi_nhanh, ten, vi_tri, nhom, doanh_thu,
+    tour, thu_nhap, ty_le_kpi} — dùng để làm bảng xếp hạng top nhân viên."""
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     if "Bảng lương" not in wb.sheetnames:
         raise ValueError(f"File '{filename}' không có sheet 'Bảng lương'.")
@@ -151,6 +159,7 @@ def read_payroll_bytes(data: bytes, filename: str):
     cols = find_header_columns(ws, NEEDED_HEADERS)
     stats = {}
     unmapped_branches = set()
+    employees = []
 
     def bucket(branch):
         if branch not in stats:
@@ -165,8 +174,10 @@ def read_payroll_bytes(data: bytes, filename: str):
         return stats[branch]
 
     valid_branch_names = {b["payroll"] for b in BRANCHES}
+    branch_label_by_payroll = {b["payroll"]: b["label"] for b in BRANCHES}
     idx_chi_nhanh = cols["chi_nhanh"] - 1
     idx_vi_tri = cols["vi_tri"] - 1
+    idx_ten = cols["ho_ten"] - 1
     idx_dt = cols["dt_ca_nhan"] - 1
     idx_tour = cols["tour_ca_nhan"] - 1
     idx_tn = cols["tong_thu_nhap"] - 1
@@ -181,13 +192,11 @@ def read_payroll_bytes(data: bytes, filename: str):
         if pos is None:
             continue
         if branch not in valid_branch_names:
-            # có thể là dòng subtotal (branch field chứa số/nhãn khác) hoặc
-            # 1 chi nhánh mới chưa cấu hình -> chỉ cảnh báo khi giống 1 tên
-            # chi nhánh thật (chữ hoa, có dấu cách) để không báo nhầm dòng rác.
             if re.match(r"^[A-ZÀ-Ỹ ]{3,}$", branch):
                 unmapped_branches.add(branch)
             continue
         pos = str(pos).strip()
+        ten = row[idx_ten]
 
         dt_ca_nhan = row[idx_dt] or 0
         tour = row[idx_tour] or 0
@@ -198,12 +207,15 @@ def read_payroll_bytes(data: bytes, filename: str):
         b["so_nhan_su"] += 1
         b["chi_phi_nhan_su"] += thu_nhap
 
+        nhom = None
         if pos in KTV_ROLES:
+            nhom = "KTV"
             b["so_ktv"] += 1
             b["dt_ktv"] += dt_ca_nhan
             b["tour_ktv"] += tour
             b["thunhap_ktv_sum"] += thu_nhap
         elif pos in TVV_ROLES:
+            nhom = "TVV"
             b["so_tvv"] += 1
             b["dt_tvv"] += dt_ca_nhan
             b["thunhap_tvv_sum"] += thu_nhap
@@ -211,11 +223,27 @@ def read_payroll_bytes(data: bytes, filename: str):
                 b["kpi_rate_tvv_sum"] += kpi_rate
                 b["kpi_rate_tvv_n"] += 1
         elif pos in OMCMLEAD_ROLES:
+            nhom = "OM/CM/LEAD"
             b["so_omcmlead"] += 1
         elif pos in QLCN_ROLES:
+            nhom = "QLCN"
             b["so_qlcn"] += 1
+        else:
+            nhom = "Khác"
 
-    return year, month, label, stats, unmapped_branches
+        if nhom in ("KTV", "TVV"):
+            employees.append({
+                "chi_nhanh": branch_label_by_payroll[branch],
+                "ten": str(ten).strip() if ten else "(?)",
+                "vi_tri": pos,
+                "nhom": nhom,
+                "doanh_thu": dt_ca_nhan,
+                "tour": tour,
+                "thu_nhap": thu_nhap,
+                "ty_le_kpi": kpi_rate if isinstance(kpi_rate, (int, float)) else None,
+            })
+
+    return year, month, label, stats, unmapped_branches, employees
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +262,8 @@ REVENUE_ROW_MAP = {
     "tong_doanh_thu": "Tổng doanh thu",
     "mua_tt_moi": "Khách mua hàng TT (mới)",
     "mua_tt_cu": "Khách mua hàng TT (cũ)",
+    "booking_moi": "Khách booking mới",
+    "checkin_moi": "Khách checkin mới",
 }
 
 
@@ -311,7 +341,8 @@ def aggregate_payroll_total(stats_by_branch):
 
 def aggregate_revenue_total(revenue, label):
     total = {"khach_moi": 0, "khach_cu": 0, "dt_khach_moi": 0, "dt_khach_cu": 0,
-              "mua_tt_moi": 0, "mua_tt_cu": 0, "tong_doanh_thu": 0}
+              "mua_tt_moi": 0, "mua_tt_cu": 0, "tong_doanh_thu": 0,
+              "booking_moi": 0, "checkin_moi": 0}
     any_data = False
     for b in BRANCHES:
         d = revenue.get(b["revenue_sheet"], {}).get(label)
@@ -640,14 +671,7 @@ def build_ktv_tvv_sheet(wb, months, revenue):
     return ws
 
 
-def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
-    ws = wb.create_sheet("Audit", 0)
-    ws.column_dimensions["A"].width = 100
-    ws["A1"] = "Báo cáo kiểm tra dữ liệu — tự động tạo lúc xuất file"
-    ws["A1"].font = FONT_BOLD
-    ws["A2"] = "Các tháng trong file: " + " → ".join(m[0] for m in months)
-    ws["A2"].font = FONT
-
+def compute_audit_warnings(months, revenue, unmapped_branches, unmapped_sheets):
     warnings = []
     if unmapped_branches:
         warnings.append(
@@ -694,6 +718,18 @@ def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
                             f"💸 [{b['label']}] CPNS/Doanh thu tăng: {cpns_dt_prev*100:.1f}% → {cpns_dt_cur*100:.1f}% "
                             f"({lbl_prev}→{lbl_cur}) — chi phí nhân sự tăng nhanh hơn doanh thu."
                         )
+    return warnings
+
+
+def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
+    ws = wb.create_sheet("Audit", 0)
+    ws.column_dimensions["A"].width = 100
+    ws["A1"] = "Báo cáo kiểm tra dữ liệu — tự động tạo lúc xuất file"
+    ws["A1"].font = FONT_BOLD
+    ws["A2"] = "Các tháng trong file: " + " → ".join(m[0] for m in months)
+    ws["A2"].font = FONT
+
+    warnings = compute_audit_warnings(months, revenue, unmapped_branches, unmapped_sheets)
 
     r = 4
     if warnings:
@@ -715,7 +751,216 @@ def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
 
 
 # ---------------------------------------------------------------------------
-# 7. UI
+# 7. BẢNG DỮ LIỆU TỔNG HỢP (tidy dataframe) CHO DASHBOARD WEB
+#    Dùng chung nguồn số liệu với sheet Excel, nhưng ở dạng số Python thường
+#    (không phải công thức) để vẽ biểu đồ Plotly.
+# ---------------------------------------------------------------------------
+
+def compute_metrics_table(months, revenue):
+    month_labels = [m[0] for m in months]
+    payroll_by_month = [m[1] for m in months]
+
+    records = []
+    for i, lbl in enumerate(month_labels):
+        for b in BRANCHES:
+            s = payroll_by_month[i].get(b["payroll"], {})
+            d = revenue.get(b["revenue_sheet"], {}).get(lbl, {})
+            rec = {"chi_nhanh": b["label"], "thang": lbl, "thang_idx": i}
+            for k in ["khach_moi", "dt_khach_moi", "khach_cu", "dt_khach_cu",
+                      "ty_le_chot_moi", "ty_le_chot_cu", "bill_tb_moi", "bill_tb_cu",
+                      "tong_doanh_thu"]:
+                rec[k] = d.get(k)
+            rec["so_nhan_su"] = s.get("so_nhan_su")
+            rec["so_ktv"] = s.get("so_ktv")
+            rec["so_tvv"] = s.get("so_tvv")
+            rec["so_omcmlead"] = s.get("so_omcmlead")
+            rec["so_qlcn"] = s.get("so_qlcn")
+            rec["dt_ktv"] = s.get("dt_ktv")
+            rec["tour_ktv"] = s.get("tour_ktv")
+            rec["dt_tvv"] = s.get("dt_tvv")
+            rec["chi_phi_nhan_su"] = s.get("chi_phi_nhan_su")
+            rec["thu_nhap_bq_ktv"] = (s["thunhap_ktv_sum"] / s["so_ktv"]) if s.get("so_ktv") else None
+            rec["thu_nhap_bq_tvv"] = (s["thunhap_tvv_sum"] / s["so_tvv"]) if s.get("so_tvv") else None
+            rec["ty_le_chot_bq_tvv"] = (s["kpi_rate_tvv_sum"] / s["kpi_rate_tvv_n"]) if s.get("kpi_rate_tvv_n") else None
+            rec["dt_tren_ktv"] = (rec["dt_ktv"] / rec["so_ktv"]) if rec.get("so_ktv") else None
+            rec["dt_tren_tvv"] = (rec["dt_tvv"] / rec["so_tvv"]) if rec.get("so_tvv") else None
+            rec["dt_tren_ns"] = (rec["tong_doanh_thu"] / rec["so_nhan_su"]) if rec.get("so_nhan_su") and rec.get("tong_doanh_thu") else None
+            rec["cpns_dt"] = (rec["chi_phi_nhan_su"] / rec["tong_doanh_thu"]) if rec.get("tong_doanh_thu") else None
+            records.append(rec)
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+    df = df.sort_values(["chi_nhanh", "thang_idx"]).reset_index(drop=True)
+    df["tang_truong_dt"] = df.groupby("chi_nhanh")["tong_doanh_thu"].pct_change()
+
+    def _diem_hq(row):
+        a = (row["dt_tren_ns"] / 1_000_000) if pd.notna(row["dt_tren_ns"]) else 0
+        bgr = (row["tang_truong_dt"] * 100) if pd.notna(row["tang_truong_dt"]) else 0
+        c = (row["cpns_dt"] * 100) if pd.notna(row["cpns_dt"]) else 0
+        return a * 0.4 + bgr * 0.2 - c * 0.4
+
+    df["diem_hieu_qua"] = df.apply(_diem_hq, axis=1)
+    df["xep_hang"] = df.groupby("thang_idx")["diem_hieu_qua"].rank(ascending=False, method="min").astype(int)
+    df["thang"] = pd.Categorical(df["thang"], categories=month_labels, ordered=True)
+    return df
+
+
+def render_web_dashboard(df, month_labels):
+    if df.empty:
+        st.info("Chưa có đủ dữ liệu để vẽ Dashboard.")
+        return
+
+    st.header("📺 Dashboard trực quan")
+
+    all_branches = [b["label"] for b in BRANCHES]
+    fcol1, fcol2 = st.columns(2)
+    with fcol1:
+        sel_months = st.multiselect("🗓️ Chọn tháng", options=month_labels, default=month_labels)
+    with fcol2:
+        sel_branches = st.multiselect("🏢 Chọn chi nhánh", options=all_branches, default=all_branches)
+
+    if not sel_months or not sel_branches:
+        st.warning("Vui lòng chọn ít nhất 1 tháng và 1 chi nhánh.")
+        return
+
+    dff = df[df["thang"].isin(sel_months) & df["chi_nhanh"].isin(sel_branches)].copy()
+    dff["thang"] = dff["thang"].cat.remove_unused_categories()
+    latest = sel_months[-1]
+    prev = sel_months[-2] if len(sel_months) >= 2 else None
+    dl = dff[dff["thang"] == latest]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"Tổng doanh thu ({latest})", f"{dl['tong_doanh_thu'].sum():,.0f} đ")
+    c2.metric(f"Tổng nhân sự ({latest})", f"{dl['so_nhan_su'].sum():,.0f}")
+    avg_score = dl["diem_hieu_qua"].mean()
+    c3.metric("Điểm hiệu quả TB", f"{avg_score:,.1f}" if pd.notna(avg_score) else "n/a")
+    if prev:
+        prev_rev = dff[dff["thang"] == prev]["tong_doanh_thu"].sum()
+        cur_rev = dl["tong_doanh_thu"].sum()
+        growth = (cur_rev - prev_rev) / prev_rev if prev_rev else None
+        c4.metric(f"Tăng trưởng DT so với {prev}", f"{growth*100:+.1f}%" if growth is not None else "n/a")
+    else:
+        c4.metric("Tăng trưởng DT", "n/a")
+
+    tabs = st.tabs(["🏢 So sánh chi nhánh", "📈 Xu hướng", "🧑‍🤝‍🧑 Hiệu suất KTV/TVV",
+                    "💰 Chi phí & Hiệu quả", "📋 Bảng chi tiết"])
+
+    with tabs[0]:
+        fig1 = px.bar(dff, x="chi_nhanh", y="tong_doanh_thu", color="thang", barmode="group",
+                       title="Tổng doanh thu theo chi nhánh qua các tháng",
+                       labels={"tong_doanh_thu": "Doanh thu (đ)", "chi_nhanh": "Chi nhánh", "thang": "Tháng"})
+        fig1.update_layout(yaxis_tickformat=",.0f")
+        st.plotly_chart(fig1, use_container_width=True)
+
+        dl_sorted = dl.sort_values("diem_hieu_qua", ascending=True)
+        fig2 = px.bar(dl_sorted, x="diem_hieu_qua", y="chi_nhanh", orientation="h",
+                       color="diem_hieu_qua", color_continuous_scale="RdYlGn",
+                       title=f"Điểm hiệu quả theo chi nhánh ({latest})",
+                       labels={"diem_hieu_qua": "Điểm hiệu quả", "chi_nhanh": "Chi nhánh"})
+        fig2.update_layout(coloraxis_showscale=False)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    with tabs[1]:
+        agg = dff.groupby("thang", observed=True).agg(
+            tong_doanh_thu=("tong_doanh_thu", "sum"),
+            so_nhan_su=("so_nhan_su", "sum"),
+            so_ktv=("so_ktv", "sum"),
+            so_tvv=("so_tvv", "sum"),
+            chi_phi_nhan_su=("chi_phi_nhan_su", "sum"),
+        ).reset_index()
+        fig3 = px.line(agg, x="thang", y="tong_doanh_thu", markers=True,
+                        title="Xu hướng tổng doanh thu (các chi nhánh đã chọn)",
+                        labels={"tong_doanh_thu": "Doanh thu (đ)", "thang": "Tháng"})
+        fig3.update_layout(yaxis_tickformat=",.0f")
+        st.plotly_chart(fig3, use_container_width=True)
+
+        fig4 = go.Figure()
+        fig4.add_trace(go.Scatter(x=agg["thang"], y=agg["so_ktv"], name="KTV", mode="lines+markers"))
+        fig4.add_trace(go.Scatter(x=agg["thang"], y=agg["so_tvv"], name="TVV", mode="lines+markers"))
+        fig4.update_layout(title="Xu hướng số lượng KTV / TVV")
+        st.plotly_chart(fig4, use_container_width=True)
+
+        fig5 = px.line(agg, x="thang", y="chi_phi_nhan_su", markers=True,
+                        title="Xu hướng chi phí nhân sự", labels={"chi_phi_nhan_su": "Chi phí (đ)"})
+        fig5.update_layout(yaxis_tickformat=",.0f")
+        st.plotly_chart(fig5, use_container_width=True)
+
+    with tabs[2]:
+        fig6 = px.bar(dl, x="chi_nhanh", y=["dt_ktv", "dt_tvv"], barmode="group",
+                       title=f"Doanh thu KTV vs TVV theo chi nhánh ({latest})",
+                       labels={"value": "Doanh thu (đ)", "variable": "Nhóm"})
+        fig6.update_layout(yaxis_tickformat=",.0f")
+        st.plotly_chart(fig6, use_container_width=True)
+
+        fig7 = px.bar(dl, x="chi_nhanh", y=["dt_tren_ktv", "dt_tren_tvv"], barmode="group",
+                       title=f"Doanh thu bình quân / người ({latest})",
+                       labels={"value": "Doanh thu/người (đ)", "variable": "Nhóm"})
+        fig7.update_layout(yaxis_tickformat=",.0f")
+        st.plotly_chart(fig7, use_container_width=True)
+
+        fig8 = px.bar(dl.sort_values("ty_le_chot_bq_tvv"), x="chi_nhanh", y="ty_le_chot_bq_tvv",
+                       title=f"Tỷ lệ chốt bình quân TVV ({latest})",
+                       labels={"ty_le_chot_bq_tvv": "Tỷ lệ chốt"})
+        fig8.update_layout(yaxis_tickformat=".0%")
+        st.plotly_chart(fig8, use_container_width=True)
+
+    with tabs[3]:
+        fig9 = px.bar(dl, x="chi_nhanh", y="cpns_dt", color="cpns_dt", color_continuous_scale="RdYlGn_r",
+                       title=f"Chi phí nhân sự / Doanh thu theo chi nhánh ({latest})",
+                       labels={"cpns_dt": "CPNS/DT"})
+        fig9.update_layout(yaxis_tickformat=".0%", coloraxis_showscale=False)
+        st.plotly_chart(fig9, use_container_width=True)
+
+        if prev:
+            fig10 = px.bar(dff[dff["thang"].isin([prev, latest])], x="chi_nhanh", y="diem_hieu_qua",
+                            color="thang", barmode="group",
+                            title=f"Điểm hiệu quả: {prev} vs {latest}")
+            st.plotly_chart(fig10, use_container_width=True)
+
+        st.subheader("Bảng xếp hạng chi nhánh")
+        rank_cols = ["chi_nhanh", "tong_doanh_thu", "cpns_dt", "diem_hieu_qua", "xep_hang"]
+        rank_df = dl[rank_cols].rename(columns={
+            "chi_nhanh": "Chi nhánh", "tong_doanh_thu": "Tổng doanh thu",
+            "cpns_dt": "CPNS/DT", "diem_hieu_qua": "Điểm hiệu quả", "xep_hang": "Xếp hạng",
+        }).sort_values("Xếp hạng").set_index("Chi nhánh")
+        st.dataframe(
+            rank_df.style.format({"Tổng doanh thu": "{:,.0f}", "CPNS/DT": "{:.1%}", "Điểm hiệu quả": "{:.1f}"}),
+            use_container_width=True,
+        )
+
+    with tabs[4]:
+        st.subheader(f"Bảng chi tiết toàn bộ chỉ tiêu — {', '.join(sel_months)}")
+        display_cols = ["chi_nhanh", "thang", "khach_moi", "dt_khach_moi", "khach_cu", "dt_khach_cu",
+                         "so_nhan_su", "so_ktv", "so_tvv", "dt_ktv", "dt_tvv",
+                         "thu_nhap_bq_ktv", "thu_nhap_bq_tvv", "chi_phi_nhan_su",
+                         "tong_doanh_thu", "cpns_dt", "diem_hieu_qua", "xep_hang"]
+        rename_map = {
+            "chi_nhanh": "Chi nhánh", "thang": "Tháng", "khach_moi": "Khách mới",
+            "dt_khach_moi": "DT khách mới", "khach_cu": "Khách cũ", "dt_khach_cu": "DT khách cũ",
+            "so_nhan_su": "Số NS", "so_ktv": "KTV", "so_tvv": "TVV",
+            "dt_ktv": "DT KTV", "dt_tvv": "DT TVV",
+            "thu_nhap_bq_ktv": "TN BQ KTV", "thu_nhap_bq_tvv": "TN BQ TVV",
+            "chi_phi_nhan_su": "Chi phí NS", "tong_doanh_thu": "Tổng DT",
+            "cpns_dt": "CPNS/DT", "diem_hieu_qua": "Điểm HQ", "xep_hang": "Xếp hạng",
+        }
+        table = dff[display_cols].rename(columns=rename_map).sort_values(["Tháng", "Xếp hạng"])
+        money_cols = ["DT khách mới", "DT khách cũ", "DT KTV", "DT TVV", "TN BQ KTV", "TN BQ TVV",
+                      "Chi phí NS", "Tổng DT"]
+        fmt = {c: "{:,.0f}" for c in money_cols}
+        fmt["CPNS/DT"] = "{:.1%}"
+        fmt["Điểm HQ"] = "{:.1f}"
+        st.dataframe(table.style.format(fmt), use_container_width=True, height=420)
+        st.download_button(
+            "⬇️ Tải bảng chi tiết (CSV)",
+            data=table.to_csv(index=False).encode("utf-8-sig"),
+            file_name="ktv_tvv_bang_chi_tiet.csv",
+            mime="text/csv",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. UI
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="Báo cáo lương KTV-TVV", layout="wide")
@@ -748,7 +993,7 @@ if revenue_file and payroll_files:
     with st.spinner(f"Đang đọc {len(payroll_files)} file Payroll..."):
         for f in payroll_files:
             try:
-                year, month, label, stats, unmapped = read_payroll_bytes(f.getvalue(), f.name)
+                year, month, label, stats, unmapped, employees = read_payroll_bytes(f.getvalue(), f.name)
             except Exception as e:
                 st.error(f"Lỗi đọc file '{f.name}': {e}")
                 continue
@@ -756,7 +1001,8 @@ if revenue_file and payroll_files:
                 st.warning(f"Không tự nhận diện được tháng của file '{f.name}' — bỏ qua file này.")
                 continue
             unmapped_branches_all |= unmapped
-            parsed.append({"filename": f.name, "year": year, "month": month, "label": label, "stats": stats})
+            parsed.append({"filename": f.name, "year": year, "month": month, "label": label,
+                            "stats": stats, "employees": employees})
 
     if not parsed:
         st.stop()
@@ -775,27 +1021,18 @@ if revenue_file and payroll_files:
     if unmapped_sheets:
         st.warning("⚠️ File Doanh thu có sheet chi nhánh chưa cấu hình: " + ", ".join(sorted(unmapped_sheets)))
 
-    st.subheader("🔎 Xem trước số liệu nhân sự đã tổng hợp")
-    preview_rows = []
-    for b in BRANCHES + [{"label": TOTAL_LABEL, "payroll": None}]:
-        row = {"Chi nhánh": b["label"]}
-        for p in parsed:
-            if b["payroll"] is None:
-                s = aggregate_payroll_total(p["stats"])
-            else:
-                s = p["stats"].get(b["payroll"], {})
-            row[f"Số NS {p['label']}"] = s.get("so_nhan_su")
-            row[f"KTV {p['label']}"] = s.get("so_ktv")
-            row[f"TVV {p['label']}"] = s.get("so_tvv")
-        preview_rows.append(row)
-    st.dataframe(preview_rows, use_container_width=True)
+    months_arg = [(p["label"], p["stats"]) for p in parsed]
+    metrics_df = compute_metrics_table(months_arg, revenue)
+
+    st.divider()
+    render_web_dashboard(metrics_df, [p["label"] for p in parsed])
+    st.divider()
 
     if st.button("🚀 Xuất sheet KTV-TVV", type="primary"):
-        months = [(p["label"], p["stats"]) for p in parsed]
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
-        build_ktv_tvv_sheet(wb, months, revenue)
-        build_audit_sheet(wb, months, revenue, unmapped_branches_all, unmapped_sheets)
+        build_ktv_tvv_sheet(wb, months_arg, revenue)
+        build_audit_sheet(wb, months_arg, revenue, unmapped_branches_all, unmapped_sheets)
         wb.move_sheet("Audit", offset=-len(wb.sheetnames))
 
         out = io.BytesIO()
