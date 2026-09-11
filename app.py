@@ -151,6 +151,10 @@ TEMPLATE_ROWS = [
 # Chi nhánh dùng KPI/doanh thu thật — loại các dòng hành chính không tính KPI
 EXCLUDE_BRANCHES = {"Học Viện LGS", "Văn Phòng"}
 
+# Các dòng tiền tệ (định dạng số có dấu phẩy) trong sheet doanh thu chi tiết
+# từng chi nhánh — dùng khi xuất sheet doanh thu (build_revenue_sheets).
+MONEY_ROWS = {2, 3, 7, 9, 16}
+
 
 def to_num(v):
     if isinstance(v, (int, float)):
@@ -245,6 +249,120 @@ def sanity_check_single_month(label: str, raw_data: dict) -> list[str]:
                 f"{', '.join(branches)} — khả năng copy nhầm dòng trong raw dashboard."
             )
     return warnings
+
+
+def month_over_month_warnings(sheet_title, month_labels, values_by_month) -> list[str]:
+    """So sánh biến động >60% giữa 2 tháng liên tiếp cho 1 chi nhánh (dùng
+    values_by_month = list các {row_idx: value} từ build_branch_values)."""
+    warnings = []
+    for i in range(1, len(month_labels)):
+        prev_label, cur_label = month_labels[i - 1], month_labels[i]
+        prev_vals, cur_vals = values_by_month[i - 1], values_by_month[i]
+        for row_idx, label, kind, _key in TEMPLATE_ROWS:
+            if kind != "raw" and kind != "khach_cu":
+                continue
+            pv, cv = prev_vals.get(row_idx), cur_vals.get(row_idx)
+            if pv in (None, 0) or cv is None:
+                continue
+            change = (cv - pv) / pv
+            if abs(change) > 0.6:
+                warnings.append(
+                    f"[{sheet_title}] '{label}': {prev_label}={pv:,.0f} → "
+                    f"{cur_label}={cv:,.0f} ({change*100:+.0f}%) — biến động lớn, nên kiểm tra lại."
+                )
+    return warnings
+
+
+def build_revenue_sheets(wb, months_raw: list[dict]) -> list[str]:
+    """Tạo sheet doanh thu chi tiết CHO TỪNG CHI NHÁNH trực tiếp trong `wb`
+    (mỗi chi nhánh 1 sheet, mỗi tháng 1 cột) — giống hệt file "Phân tích
+    Doanh thu khách hàng" của app gốc, nhưng giờ ghi thẳng vào workbook xuất
+    ra cùng với sheet KTV-TVV/Audit thay vì xuất file riêng.
+    months_raw: [{'label': str, 'raw_data': {...}}, ...] — đã sắp xếp theo
+    thời gian, đã xác nhận tên cột (tháng).
+    Trả về list cảnh báo biến động lớn giữa các tháng liên tiếp (để đưa vào
+    sheet Audit)."""
+    all_branches = []
+    for m in months_raw:
+        for b in m["raw_data"].keys():
+            if b not in EXCLUDE_BRANCHES and b not in all_branches:
+                all_branches.append(b)
+
+    all_warnings = []
+    used_titles = set()
+
+    for branch in all_branches:
+        title = branch[:31]
+        suffix = 2
+        while title in used_titles:
+            title = f"{branch[:28]}_{suffix}"[:31]
+            suffix += 1
+        used_titles.add(title)
+
+        ws = wb.create_sheet(title)
+        ws.column_dimensions["A"].width = 32
+        ws["A1"] = "Chỉ tiêu"
+        ws["A1"].font = FONT_HEADER
+        ws["A1"].fill = FILL_HEADER
+        ws["A1"].border = BORDER
+
+        values_by_month = []
+        for col_idx, m in enumerate(months_raw, start=2):
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = 18
+            header_cell = ws[f"{col_letter}1"]
+            header_cell.value = m["label"]
+            header_cell.font = FONT_HEADER
+            header_cell.fill = FILL_HEADER
+            header_cell.alignment = Alignment(horizontal="center")
+            header_cell.border = BORDER
+
+            branch_row = m["raw_data"].get(branch, {})
+            computed = build_branch_values(branch_row) if branch_row else {}
+            values_by_month.append(computed)
+
+            for row_idx, label, kind, _key in TEMPLATE_ROWS:
+                a = ws[f"A{row_idx}"]
+                a.value = label
+                a.font = FONT_BOLD if kind.startswith("formula") else FONT
+                a.border = BORDER
+
+                cell = ws[f"{col_letter}{row_idx}"]
+                cell.font = FONT
+                cell.border = BORDER
+                cell.alignment = Alignment(horizontal="right")
+
+                if kind == "formula_moi":
+                    cell.value = f"={col_letter}5/{col_letter}4"
+                    cell.number_format = PCT_FMT
+                elif kind == "formula_cu":
+                    cell.value = f"={col_letter}14/{col_letter}13"
+                    cell.number_format = PCT_FMT
+                elif kind == "missing":
+                    cell.value = None
+                    cell.fill = FILL_INPUT
+                    cell.comment = Comment(
+                        "Raw dashboard không có số liệu này. Vui lòng nhập tay.",
+                        "App phân tích doanh thu",
+                    )
+                else:
+                    val = computed.get(row_idx)
+                    cell.value = val
+                    cell.number_format = MONEY_FMT if row_idx in MONEY_ROWS else INT_FMT
+                    if not branch_row:
+                        cell.fill = FILL_INPUT
+                        cell.comment = Comment(
+                            f"Không có dữ liệu chi nhánh này trong file raw tháng {m['label']}.",
+                            "App phân tích doanh thu",
+                        )
+
+        ws.freeze_panes = "B2"
+        month_labels = [m["label"] for m in months_raw]
+        all_warnings.extend(
+            month_over_month_warnings(branch, month_labels, values_by_month)
+        )
+
+    return all_warnings
 
 
 _LABEL_TO_FIELD = {v: k for k, v in REVENUE_ROW_MAP.items()}
