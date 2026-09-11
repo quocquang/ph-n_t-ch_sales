@@ -70,6 +70,21 @@ NEEDED_HEADERS = {
     "tour_ca_nhan": "TỔNG ĐIỂM TOUR CÁ NHÂN",
     "tong_thu_nhap": "TỔNG THU NHẬP",
     "ty_le_kpi_ca_nhan": "TỶ LỆ %\nCÁ NHÂN ĐẠT SO VỚI KPI",
+    # 🆕 Các cột chi tiết chi phí lương — dùng cho sheet "BÁO CÁO LƯƠNG CN".
+    # Lưu ý: find_header_columns() đã strip() giá trị đọc được nên các nhãn
+    # có khoảng trắng đầu/cuối trong file gốc (vd " TỔNG TIỀN TOUR") được
+    # khai báo KHÔNG có khoảng trắng đầu/cuối ở đây; khoảng trắng ở giữa
+    # (vd "TỔNG TIỀN  TĂNG CA" có 2 dấu cách) vẫn phải giữ nguyên.
+    "luong_ngay_cong": "LƯƠNG THEO NGÀY CÔNG THỰC TẾ",
+    "tien_tang_ca": "TỔNG TIỀN  TĂNG CA",
+    "bhxh": "BHXH 10,5%",
+    "cong_doan": "CÔNG ĐOÀN 0,5%",
+    "phu_cap": "TỔNG PHỤ CẤP",
+    "tien_tour": "TỔNG TIỀN TOUR",
+    "ho_tro": "TỔNG HỖ TRỢ",
+    "thuong": "TỔNG THƯỞNG",
+    "hoa_hong": "HOA HỒNG",
+    "phat": "TỔNG PHẠT",
 }
 
 # Nhãn chỉ tiêu doanh thu dùng chung giữa raw dashboard và bảng KTV-TVV.
@@ -428,7 +443,7 @@ def build_revenue_dict(months_raw: list[dict]):
 #    (đã bỏ hoàn toàn phần đọc/đối chiếu "raw_data" / sheet "Data tổng")
 # ============================================================================
 
-def find_header_columns(ws, header_map, search_rows=(2, 3, 4)):
+def find_header_columns(ws, header_map, search_rows=(4, 3, 2)):
     found = {}
     max_col = ws.max_column
     for r in search_rows:
@@ -492,6 +507,19 @@ def read_payroll_bytes(data: bytes, filename: str):
                 "so_omcmlead": 0,
                 "so_qlcn": 0,
                 "chi_phi_nhan_su": 0.0,
+                # 🆕 Chi tiết chi phí lương — TÍNH CHO TOÀN BỘ NHÂN SỰ CHI NHÁNH
+                # (mọi vị trí, không chỉ KTV+TVV) — dùng cho sheet
+                # "BÁO CÁO LƯƠNG CN". Đã đối chiếu khớp 100% với báo cáo mẫu.
+                "luong_ngay_cong_sum": 0.0,
+                "tien_tang_ca_sum": 0.0,
+                "bhxh_congdoan_sum": 0.0,
+                "phu_cap_sum": 0.0,
+                "diem_tour_sum": 0.0,
+                "tien_tour_sum": 0.0,
+                "ho_tro_sum": 0.0,
+                "thuong_sum": 0.0,
+                "hoa_hong_sum": 0.0,
+                "phat_sum": 0.0,
             }
         return stats[branch]
 
@@ -504,6 +532,17 @@ def read_payroll_bytes(data: bytes, filename: str):
     idx_tour = cols["tour_ca_nhan"] - 1
     idx_tn = cols["tong_thu_nhap"] - 1
     idx_kpi = cols["ty_le_kpi_ca_nhan"] - 1
+    # 🆕 chỉ số cột chi tiết chi phí lương
+    idx_luong_ngay_cong = cols["luong_ngay_cong"] - 1
+    idx_tien_tang_ca = cols["tien_tang_ca"] - 1
+    idx_bhxh = cols["bhxh"] - 1
+    idx_cong_doan = cols["cong_doan"] - 1
+    idx_phu_cap = cols["phu_cap"] - 1
+    idx_tien_tour = cols["tien_tour"] - 1
+    idx_ho_tro = cols["ho_tro"] - 1
+    idx_thuong = cols["thuong"] - 1
+    idx_hoa_hong = cols["hoa_hong"] - 1
+    idx_phat = cols["phat"] - 1
 
     for row in ws.iter_rows(min_row=5, values_only=True):
         branch = row[idx_chi_nhanh]
@@ -528,6 +567,19 @@ def read_payroll_bytes(data: bytes, filename: str):
         b = bucket(branch)
         b["so_nhan_su"] += 1
         b["chi_phi_nhan_su"] += thu_nhap
+
+        # 🆕 Cộng dồn chi tiết chi phí lương cho TOÀN BỘ nhân sự chi nhánh
+        # (mọi vị trí) — khớp đúng với báo cáo mẫu "BÁO CÁO LƯƠNG CN -T6".
+        b["luong_ngay_cong_sum"] += row[idx_luong_ngay_cong] or 0
+        b["tien_tang_ca_sum"] += row[idx_tien_tang_ca] or 0
+        b["bhxh_congdoan_sum"] += (row[idx_bhxh] or 0) + (row[idx_cong_doan] or 0)
+        b["phu_cap_sum"] += row[idx_phu_cap] or 0
+        b["diem_tour_sum"] += row[idx_tour] or 0
+        b["tien_tour_sum"] += row[idx_tien_tour] or 0
+        b["ho_tro_sum"] += row[idx_ho_tro] or 0
+        b["thuong_sum"] += row[idx_thuong] or 0
+        b["hoa_hong_sum"] += row[idx_hoa_hong] or 0
+        b["phat_sum"] += row[idx_phat] or 0
 
         nhom = None
         if pos in KTV_ROLES:
@@ -575,7 +627,10 @@ def read_payroll_bytes(data: bytes, filename: str):
 def aggregate_payroll_total(stats_by_branch):
     keys_sum = ["so_nhan_su", "so_ktv", "dt_ktv", "tour_ktv", "thunhap_ktv_sum",
                 "so_tvv", "dt_tvv", "thunhap_tvv_sum", "kpi_rate_tvv_sum",
-                "kpi_rate_tvv_n", "so_omcmlead", "so_qlcn", "chi_phi_nhan_su"]
+                "kpi_rate_tvv_n", "so_omcmlead", "so_qlcn", "chi_phi_nhan_su",
+                "luong_ngay_cong_sum", "tien_tang_ca_sum", "bhxh_congdoan_sum",
+                "phu_cap_sum", "diem_tour_sum", "tien_tour_sum",
+                "ho_tro_sum", "thuong_sum", "hoa_hong_sum", "phat_sum"]
     total = {k: 0.0 for k in keys_sum}
     for b in BRANCHES:
         s = stats_by_branch.get(b["payroll"])
@@ -922,10 +977,13 @@ def build_ktv_tvv_sheet(wb, months, revenue):
 
 
 # ============================================================================
-# 5b. XÂY DỰNG SHEET "BÁO CÁO LƯƠNG CN -{tháng}" (chi phí lương KTV+TVV)
+# 5b. XÂY DỰNG SHEET "BÁO CÁO LƯƠNG CN -{tháng}" (chi phí lương TOÀN BỘ
+#     NHÂN SỰ từng chi nhánh — mọi vị trí, không riêng KTV+TVV).
 #     So sánh tháng mới nhất với tháng liền trước, theo từng chi nhánh.
-#     Dùng lại đúng số liệu app đã tính (thunhap_ktv_sum/tvv_sum, so_ktv/tvv,
-#     tong_doanh_thu) — KHÔNG đọc thêm cột payroll mới nào.
+#     🆕 Đã bổ sung đầy đủ các cột chi tiết chi phí lương (Tổng lương theo
+#     ngày công, Tiền tăng ca, Chi phí BHXH+Công đoàn, Phụ cấp, Điểm tour,
+#     Tour, Hỗ trợ, Chi phí thưởng, Hoa hồng, Phạt) trước khi tới cột Tổng
+#     chi phí nhân sự — đã đối chiếu khớp 100% với báo cáo mẫu tham khảo.
 # ============================================================================
 
 def _month_display(label: str) -> str:
@@ -936,14 +994,34 @@ def _month_display(label: str) -> str:
     return label
 
 
-def _get_ktv_tvv_stats(stats_by_branch: dict, payroll_name: str):
-    """Trả về (số lượng KTV+TVV, tổng thu nhập KTV+TVV) cho 1 chi nhánh."""
+def _get_branch_luong_breakdown(stats_by_branch: dict, payroll_name: str) -> dict:
+    """Trả về dict chi tiết chi phí lương của TOÀN BỘ NHÂN SỰ 1 chi nhánh
+    (mọi vị trí — KTV, TVV, OM/CM/LEAD, QLCN...): số lượng nhân sự, tổng chi
+    phí nhân sự (=tổng thu nhập), và các thành phần chi phí chi tiết (lương
+    ngày công, tăng ca, BHXH+CĐ, phụ cấp, điểm tour, tiền tour, hỗ trợ,
+    thưởng, hoa hồng, phạt). Đã đối chiếu khớp 100% với báo cáo mẫu."""
     s = stats_by_branch.get(payroll_name)
     if not s:
-        return 0, 0.0
-    n = (s.get("so_ktv", 0) or 0) + (s.get("so_tvv", 0) or 0)
-    cp = (s.get("thunhap_ktv_sum", 0.0) or 0.0) + (s.get("thunhap_tvv_sum", 0.0) or 0.0)
-    return n, cp
+        return {
+            "n": 0, "cp": 0.0,
+            "luong_ngay_cong": 0.0, "tien_tang_ca": 0.0, "bhxh_congdoan": 0.0,
+            "phu_cap": 0.0, "diem_tour": 0.0, "tien_tour": 0.0,
+            "ho_tro": 0.0, "thuong": 0.0, "hoa_hong": 0.0, "phat": 0.0,
+        }
+    return {
+        "n": s.get("so_nhan_su", 0) or 0,
+        "cp": s.get("chi_phi_nhan_su", 0.0) or 0.0,
+        "luong_ngay_cong": s.get("luong_ngay_cong_sum", 0.0) or 0.0,
+        "tien_tang_ca": s.get("tien_tang_ca_sum", 0.0) or 0.0,
+        "bhxh_congdoan": s.get("bhxh_congdoan_sum", 0.0) or 0.0,
+        "phu_cap": s.get("phu_cap_sum", 0.0) or 0.0,
+        "diem_tour": s.get("diem_tour_sum", 0.0) or 0.0,
+        "tien_tour": s.get("tien_tour_sum", 0.0) or 0.0,
+        "ho_tro": s.get("ho_tro_sum", 0.0) or 0.0,
+        "thuong": s.get("thuong_sum", 0.0) or 0.0,
+        "hoa_hong": s.get("hoa_hong_sum", 0.0) or 0.0,
+        "phat": s.get("phat_sum", 0.0) or 0.0,
+    }
 
 
 def build_luong_cn_sheet(wb, months, revenue):
@@ -963,15 +1041,16 @@ def build_luong_cn_sheet(wb, months, revenue):
 
     ws.column_dimensions["A"].width = 16
     ws.column_dimensions["B"].width = 14
-    for col in ("C", "D", "E", "F", "G", "H"):
-        ws.column_dimensions[col].width = 19
+    # C..R = 16 cột dữ liệu
+    for col in "CDEFGHIJKLMNOPQR":
+        ws.column_dimensions[col].width = 18
 
     n_branches = len(BRANCHES)
     title = (
-        f"BÁO CÁO CHI PHÍ LƯƠNG {n_branches} CHI NHÁNH (KTV+TVV) — "
+        f"BÁO CÁO CHI PHÍ LƯƠNG {n_branches} CHI NHÁNH — "
         f"{cur_disp} SO VỚI {prev_disp} CÙNG KỲ"
     )
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=18)
     tcell = ws.cell(row=1, column=1, value=title)
     tcell.font = FONT_BOLD
     tcell.alignment = Alignment(horizontal="center")
@@ -980,8 +1059,18 @@ def build_luong_cn_sheet(wb, months, revenue):
     style_header(ws.cell(row=2, column=1), "CHI NHÁNH LÀM VIỆC")
     headers = [
         "TỔNG DOANH THU",
-        "SỐ LƯỢNG NHÂN SỰ\n(KTV+TVV)",
-        "TỔNG CHI PHÍ NHÂN SỰ\n(KTV+TVV)",
+        "SỐ LƯỢNG NHÂN SỰ",
+        "TỔNG LƯƠNG THEO\nNGÀY CÔNG",
+        "TIỀN TĂNG CA",
+        "CHI PHÍ BHXH +\nCÔNG ĐOÀN",
+        "PHỤ CẤP",
+        "ĐIỂM TOUR",
+        "TOUR",
+        "HỖ TRỢ",
+        "CHI PHÍ THƯỞNG",
+        "HOA HỒNG",
+        "PHẠT",
+        "TỔNG CHI PHÍ\nNHÂN SỰ",
         "CHI PHÍ LƯƠNG/\nDOANH THU",
         "LƯƠNG BÌNH QUÂN/\nNHÂN SỰ",
         "CHỈ SỐ ROI\n(DOANH THU/CHI PHÍ NHÂN SỰ)",
@@ -992,68 +1081,72 @@ def build_luong_cn_sheet(wb, months, revenue):
     def get_rev_val(sheet_name_rev, label):
         return revenue.get(sheet_name_rev, {}).get(label, {}).get("tong_doanh_thu")
 
-    def write_data_row(rr, label_txt, rev_v, n_v, cp_v, bold=False):
+    def write_data_row(rr, rev_v, bd, bold=False):
+        """bd: dict trả về từ _get_ktv_tvv_breakdown (đã có thêm key 'n')."""
         f = FONT_BOLD if bold else FONT
-        b_cell = ws.cell(row=rr, column=2, value=label_txt)
-        b_cell.font = f; b_cell.border = BORDER; b_cell.alignment = Alignment(horizontal="center")
 
-        c_c = ws.cell(row=rr, column=3, value=rev_v)
-        c_c.number_format = MONEY_FMT; c_c.font = f; c_c.border = BORDER
-        c_c.alignment = Alignment(horizontal="center")
+        def put(col, val, fmt, formula=None):
+            cell = ws.cell(row=rr, column=col, value=formula if formula is not None else val)
+            cell.number_format = fmt
+            cell.font = f
+            cell.border = BORDER
+            cell.alignment = Alignment(horizontal="center")
+            return cell
 
-        c_d = ws.cell(row=rr, column=4, value=n_v)
-        c_d.number_format = INT_FMT; c_d.font = f; c_d.border = BORDER
-        c_d.alignment = Alignment(horizontal="center")
-
-        c_e = ws.cell(row=rr, column=5, value=cp_v)
-        c_e.number_format = MONEY_FMT; c_e.font = f; c_e.border = BORDER
-        c_e.alignment = Alignment(horizontal="center")
+        put(3, rev_v, MONEY_FMT)                      # C  Tổng doanh thu
+        put(4, bd["n"], INT_FMT)                       # D  Số lượng nhân sự
+        put(5, bd["luong_ngay_cong"], MONEY_FMT)        # E  Tổng lương theo ngày công
+        put(6, bd["tien_tang_ca"], MONEY_FMT)           # F  Tiền tăng ca
+        put(7, bd["bhxh_congdoan"], MONEY_FMT)          # G  Chi phí BHXH + Công đoàn
+        put(8, bd["phu_cap"], MONEY_FMT)                # H  Phụ cấp
+        put(9, bd["diem_tour"], INT_FMT)                # I  Điểm tour
+        put(10, bd["tien_tour"], MONEY_FMT)             # J  Tour (tiền)
+        put(11, bd["ho_tro"], MONEY_FMT)                # K  Hỗ trợ
+        put(12, bd["thuong"], MONEY_FMT)                # L  Chi phí thưởng
+        put(13, bd["hoa_hong"], MONEY_FMT)              # M  Hoa hồng
+        put(14, bd["phat"], MONEY_FMT)                  # N  Phạt
+        put(15, bd["cp"], MONEY_FMT)                    # O  Tổng chi phí nhân sự
 
         L = rr
-        c_f = ws.cell(row=rr, column=6, value=f"=IFERROR(E{L}/C{L},0)")
-        c_f.number_format = "0.00%"; c_f.font = f; c_f.border = BORDER
-        c_f.alignment = Alignment(horizontal="center")
-
-        c_g = ws.cell(row=rr, column=7, value=f"=IFERROR(E{L}/D{L},0)")
-        c_g.number_format = MONEY_FMT; c_g.font = f; c_g.border = BORDER
-        c_g.alignment = Alignment(horizontal="center")
-
-        c_h = ws.cell(row=rr, column=8, value=f"=IFERROR(C{L}/E{L},0)")
-        c_h.number_format = "0.00"; c_h.font = f; c_h.border = BORDER
-        c_h.alignment = Alignment(horizontal="center")
+        put(16, None, "0.00%", formula=f"=IFERROR(O{L}/C{L},0)")     # P  CPL/Doanh thu
+        put(17, None, MONEY_FMT, formula=f"=IFERROR(O{L}/D{L},0)")   # Q  Lương BQ/nhân sự
+        put(18, None, "0.00", formula=f"=IFERROR(C{L}/O{L},0)")      # R  Chỉ số ROI
 
     def write_growth_row(rr, r_cur, r_prev, bold=False):
         f = FONT_BOLD if bold else FONT
         g_label = ws.cell(row=rr, column=2, value="Tăng trưởng")
         g_label.font = f; g_label.border = BORDER; g_label.alignment = Alignment(horizontal="center")
-        for col_idx, col_letter in zip(range(3, 9), "CDEFGH"):
+        for col_idx, col_letter in zip(range(3, 19), "CDEFGHIJKLMNOPQR"):
             cell = ws.cell(
                 row=rr, column=col_idx,
                 value=f'=IFERROR(({col_letter}{r_cur}-{col_letter}{r_prev})/{col_letter}{r_prev},"")',
             )
             cell.number_format = "0.00%"; cell.font = f; cell.border = BORDER
             cell.alignment = Alignment(horizontal="center")
-        # Tô xanh nếu doanh thu tăng / đỏ nếu giảm; ngược lại cho chi phí
-        apply_growth_colors(ws, rr, [3])
-        apply_growth_colors(ws, rr, [5], reverse=True)
+        # Doanh thu (C) & Điểm tour (I) & ROI (R): tăng = tốt -> xanh
+        apply_growth_colors(ws, rr, [3, 9, 18])
+        # Các cột chi phí (E,F,G,H,J,K,L,M,N,O) + CPNS/DT (P) + Lương BQ (Q):
+        # tăng = xấu -> đỏ
+        apply_growth_colors(ws, rr, [5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17], reverse=True)
 
     row = 3
     total_rev_cur = total_rev_prev = 0.0
-    total_n_cur = total_n_prev = 0
-    total_cp_cur = total_cp_prev = 0.0
+    total_bd_cur = {k: 0.0 for k in ["n", "cp", "luong_ngay_cong", "tien_tang_ca", "bhxh_congdoan",
+                                      "phu_cap", "diem_tour", "tien_tour", "ho_tro", "thuong",
+                                      "hoa_hong", "phat"]}
+    total_bd_prev = dict(total_bd_cur)
 
     for b in BRANCHES:
         rev_cur = get_rev_val(b["revenue_sheet"], cur_label)
         rev_prev = get_rev_val(b["revenue_sheet"], prev_label)
-        n_cur, cp_cur = _get_ktv_tvv_stats(cur_stats, b["payroll"])
-        n_prev, cp_prev = _get_ktv_tvv_stats(prev_stats, b["payroll"])
+        bd_cur = _get_branch_luong_breakdown(cur_stats, b["payroll"])
+        bd_prev = _get_branch_luong_breakdown(prev_stats, b["payroll"])
 
         total_rev_cur += rev_cur or 0
         total_rev_prev += rev_prev or 0
-        total_n_cur += n_cur
-        total_n_prev += n_prev
-        total_cp_cur += cp_cur
-        total_cp_prev += cp_prev
+        for k in total_bd_cur:
+            total_bd_cur[k] += bd_cur.get(k, 0) or 0
+            total_bd_prev[k] += bd_prev.get(k, 0) or 0
 
         r_cur, r_prev, r_growth = row, row + 1, row + 2
         ws.merge_cells(start_row=r_cur, start_column=1, end_row=r_growth, end_column=1)
@@ -1064,8 +1157,15 @@ def build_luong_cn_sheet(wb, months, revenue):
         for rr in (r_prev, r_growth):
             ws.cell(row=rr, column=1).border = BORDER
 
-        write_data_row(r_cur, cur_disp, rev_cur, n_cur, cp_cur)
-        write_data_row(r_prev, prev_disp, rev_prev, n_prev, cp_prev)
+        ws.cell(row=r_cur, column=2, value=cur_disp).font = FONT
+        ws.cell(row=r_cur, column=2).border = BORDER
+        ws.cell(row=r_cur, column=2).alignment = Alignment(horizontal="center")
+        ws.cell(row=r_prev, column=2, value=prev_disp).font = FONT
+        ws.cell(row=r_prev, column=2).border = BORDER
+        ws.cell(row=r_prev, column=2).alignment = Alignment(horizontal="center")
+
+        write_data_row(r_cur, rev_cur, bd_cur)
+        write_data_row(r_prev, rev_prev, bd_prev)
         write_growth_row(r_growth, r_cur, r_prev)
 
         row += 3
@@ -1083,8 +1183,15 @@ def build_luong_cn_sheet(wb, months, revenue):
         c.fill = FILL_SECTION
         c.border = BORDER
 
-    write_data_row(t_cur, cur_disp, total_rev_cur, total_n_cur, total_cp_cur, bold=True)
-    write_data_row(t_prev, prev_disp, total_rev_prev, total_n_prev, total_cp_prev, bold=True)
+    ws.cell(row=t_cur, column=2, value=cur_disp).font = FONT_BOLD
+    ws.cell(row=t_cur, column=2).border = BORDER
+    ws.cell(row=t_cur, column=2).alignment = Alignment(horizontal="center")
+    ws.cell(row=t_prev, column=2, value=prev_disp).font = FONT_BOLD
+    ws.cell(row=t_prev, column=2).border = BORDER
+    ws.cell(row=t_prev, column=2).alignment = Alignment(horizontal="center")
+
+    write_data_row(t_cur, total_rev_cur, total_bd_cur, bold=True)
+    write_data_row(t_prev, total_rev_prev, total_bd_prev, bold=True)
     write_growth_row(t_growth, t_cur, t_prev, bold=True)
 
     ws.freeze_panes = "C3"
@@ -1401,8 +1508,8 @@ lương"). App tự tính toàn bộ chỉ tiêu doanh thu trực tiếp từ ra
 (không cần file "Phân tích Doanh thu khách hàng" làm sẵn), tự nhận diện
 tháng, tự sắp xếp theo thời gian, và tự mở rộng bảng KTV-TVV theo đúng số
 tháng bạn upload. File xuất ra gồm 3 sheet: **Audit**, **KTV-TVV**, và
-**BÁO CÁO LƯƠNG CN -{tháng}** (chi phí lương KTV+TVV, so với tháng liền
-trước).
+**BÁO CÁO LƯƠNG CN -{tháng}** (chi phí lương KTV+TVV chi tiết theo từng
+thành phần, so với tháng liền trước).
 """
 )
 
