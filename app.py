@@ -1,53 +1,19 @@
 """
-Streamlit app: Tự động tạo sheet "KTV-TVV" từ raw data — BẢN NÂNG CẤP (nhanh
-hơn + chi tiết hơn + đối chiếu bằng raw_data trong Payroll):
+Streamlit app: Tự động tạo sheet "KTV-TVV" TRỰC TIẾP TỪ RAW DASHBOARD doanh thu
+(nhiều file, mỗi file 1 tháng) + file Payroll — KHÔNG cần file trung gian
+"Phân tích Doanh thu khách hàng" đã xử lý sẵn (vì file đó chưa làm).
 
-  1. File "Phân tích Doanh thu khách hàng" (nhiều tháng, mỗi chi nhánh 1 sheet).
-  2. File Payroll — upload BAO NHIÊU FILE CŨNG ĐƯỢC (sheet "Bảng lương").
-
-ĐIỂM MỚI so với bản trước:
-  ⚡ TỐC ĐỘ: đọc file payroll ở chế độ read_only (nhanh hơn ~30 lần so với
-     cách đọc thông thường — 1 file 17MB từ ~34s xuống còn ~1s) + cache lại
-     kết quả đọc file (st.cache_data) để bấm nút xuất nhiều lần không phải
-     đọc lại file từ đầu.
-  📊 THÊM CỘT "TẤT CẢ CHI NHÁNH": tổng hợp toàn công ty ở cuối bảng, tính
-     đúng theo trọng số (vd tỷ lệ chốt = tổng khách chốt / tổng khách, không
-     phải trung bình cộng đơn giản của 9 chi nhánh).
-  🎨 TÔ MÀU CHÊNH LỆCH: cột "Δ" tự động xanh khi tốt lên / đỏ khi xấu đi
-     (doanh thu tăng = xanh, chi phí nhân sự tăng = đỏ...).
-  🔎 SHEET "AUDIT" MỚI: tự động cảnh báo — chi nhánh có trong Payroll nhưng
-     chưa cấu hình trong app (dữ liệu sẽ bị bỏ sót), chi nhánh thiếu dữ liệu
-     doanh thu, chi nhánh có Chi phí nhân sự tăng nhanh hơn Doanh thu, chi
-     nhánh sụt doanh thu so với tháng trước.
-  📺 DASHBOARD TRỰC TIẾP TRÊN WEB: ngay sau khi upload đủ file (không cần bấm
-     xuất Excel) — có bộ lọc tháng/chi nhánh, thẻ KPI, 5 tab biểu đồ (so sánh
-     chi nhánh, xu hướng theo tháng, hiệu suất KTV/TVV, chi phí & hiệu quả,
-     bảng chi tiết có thể tải CSV). Phần này chỉ hiển thị trên web, không ảnh
-     hưởng tới file Excel xuất ra.
-  🆕 ĐỌC THÊM "RAW DATA" TRONG PAYROLL (sheet "Data tổng"): mỗi file Payroll
-     tự mang theo 1 dashboard doanh thu riêng (KPI, Doanh thu trước/sau thuế
-     phí, DT khách cũ...) — app giờ đọc luôn sheet này (gọi tắt là raw_data)
-     để:
-       (a) ĐỐI CHIẾU chéo với số "Tổng doanh thu" trong file Phân tích Doanh
-           thu khách hàng — lệch quá 0.5% sẽ bị cảnh báo trong sheet Audit
-           (đây chính xác là cách đã dùng để bắt lỗi số liệu trong file báo
-           cáo lương T7-T8/2026 thực tế trước đó).
-       (b) DỰ PHÒNG (fallback): nếu 1 chi nhánh/tháng nào đó bị thiếu dữ liệu
-           trong file Phân tích Doanh thu, app tự động lấy tạm "Doanh thu
-           trước thuế phí" / "DT khách cũ" từ raw_data trong Payroll để bảng
-           không bị bỏ trống ô — có cảnh báo rõ trong Audit là số đang dùng
-           tạm từ raw_data, không phải từ file doanh thu chính thức.
-     Tên cột trong sheet "Data tổng" đổi khác nhau giữa các tháng (vd tháng 08
-     tách "DT khách cũ" thành "DT khách cũ trước thuế phí" / "...sau thuế
-     phí"), nên app dò theo DANH SÁCH BIẾN THỂ tên cột, không hard-code 1 tên
-     cố định.
-
-Toàn bộ công thức nghiệp vụ đã ĐỐI CHIẾU khớp chính xác 100% với file báo cáo
-lương T8/2026 (so với T7/2026) người dùng tự làm tay, trên toàn bộ 9 chi nhánh
-và 26 chỉ tiêu.
-
-LƯU Ý: vị trí cột "TỔNG THU NHẬP" và các cột khác trong "Bảng lương" LỆCH NHAU
-giữa các tháng — app dò cột theo TÊN HEADER, không theo số thứ tự cột.
+SO VỚI BẢN TRƯỚC:
+  ✅ GỘP thẳng phần đọc "raw dashboard doanh thu" (read_raw_dashboard,
+     detect_month, build_branch_values, sanity_check_single_month...) từ app
+     "Phân tích Doanh thu khách hàng" vào ngay trong app này. App tự tính các
+     chỉ tiêu doanh thu (Khách mới/cũ, Doanh thu, Tỷ lệ chốt, Bill TB, Tổng
+     doanh thu...) từ raw dashboard, KHÔNG cần upload file Excel trung gian
+     nữa.
+  ❌ BỎ HẲN phần đọc/đối chiếu/dự phòng "raw_data" (sheet "Data tổng") có
+     trong file Payroll — vì đó chỉ là giải pháp tạm khi chưa có số doanh thu
+     chính thức; giờ doanh thu đã được tính trực tiếp từ raw dashboard nên
+     không cần đối chiếu/dự phòng chéo với Payroll nữa.
 
 Cách chạy:
     pip install streamlit openpyxl pandas plotly
@@ -56,6 +22,7 @@ Cách chạy:
 
 import io
 import re
+from datetime import date
 
 import openpyxl
 import pandas as pd
@@ -67,9 +34,9 @@ from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 from openpyxl.formatting.rule import CellIsRule
 
-# ---------------------------------------------------------------------------
-# 1. CẤU HÌNH CHI NHÁNH
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 0. CẤU HÌNH CHI NHÁNH & NHÃN CHỈ TIÊU DÙNG CHUNG
+# ============================================================================
 
 BRANCHES = [
     {"label": "Bình Dương", "payroll": "BÌNH DƯƠNG", "revenue_sheet": "Bình Dương"},
@@ -99,21 +66,25 @@ NEEDED_HEADERS = {
     "ty_le_kpi_ca_nhan": "TỶ LỆ %\nCÁ NHÂN ĐẠT SO VỚI KPI",
 }
 
-# --- MỚI: cấu hình đọc sheet "Data tổng" (raw_data) trong file Payroll -----
-# Mỗi field có 1 danh sách biến thể tên cột (thử theo thứ tự, lấy cái khớp
-# đầu tiên) vì tên cột đổi khác nhau giữa các tháng.
-RAW_DATA_SHEET_NAME = "Data tổng"
-RAW_DATA_HEADERS = {
-    "chi_nhanh": ["Chi nhánh"],
-    "kpi_doanh_thu": ["KPI"],
-    "doanh_thu_truoc_thue": ["Doanh thu trước thuế phí"],
-    "doanh_thu_sau_thue": ["Doanh thu sau thuế phí"],
-    "dt_khach_cu": ["DT khách cũ trước thuế phí", "DT khách cũ"],
+# Nhãn chỉ tiêu doanh thu dùng chung giữa raw dashboard và bảng KTV-TVV.
+# Đây chính là "cầu nối" giúp gộp thẳng raw dashboard vào, không cần file
+# trung gian: TEMPLATE_ROWS (raw dashboard) và REVENUE_ROW_MAP (KTV-TVV) dùng
+# đúng cùng 1 bộ nhãn tiếng Việt nên map trực tiếp theo nhãn.
+REVENUE_ROW_MAP = {
+    "khach_moi": "Khách mới",
+    "dt_khach_moi": "Doanh thu khách mới",
+    "khach_cu": "Khách thực tế (cũ)",
+    "dt_khach_cu": "Doanh thu khách cũ",
+    "ty_le_chot_moi": "Tỷ lệ chốt khách mới",
+    "ty_le_chot_cu": "Tỷ lệ chốt khách cũ",
+    "bill_tb_moi": "Bill TB khách mới",
+    "bill_tb_cu": "Bill TB khách cũ",
+    "tong_doanh_thu": "Tổng doanh thu",
+    "mua_tt_moi": "Khách mua hàng TT (mới)",
+    "mua_tt_cu": "Khách mua hàng TT (cũ)",
+    "booking_moi": "Khách booking mới",
+    "checkin_moi": "Khách checkin mới",
 }
-RAW_DATA_SEARCH_ROWS = (1, 2, 3)
-RAW_DATA_MAX_COL = 6          # bảng doanh thu chính nằm ở các cột đầu (1-6)
-RAW_DATA_MAX_SCAN_ROWS = 40   # quét tối đa bấy nhiêu dòng để tìm 9 chi nhánh
-RAW_DATA_MISMATCH_THRESHOLD = 0.005  # 0.5% — lệch hơn mức này mới cảnh báo
 
 FONT = Font(name="Arial", size=11)
 FONT_BOLD = Font(name="Arial", size=11, bold=True)
@@ -126,7 +97,6 @@ FILL_DIFF = PatternFill("solid", fgColor="F2F2F2")
 FILL_GOOD = PatternFill("solid", fgColor="C6EFCE")
 FILL_BAD = PatternFill("solid", fgColor="FFC7CE")
 FILL_WARN = PatternFill("solid", fgColor="FFEB9C")
-FILL_RAWDATA = PatternFill("solid", fgColor="DDEBF7")  # màu riêng cho cảnh báo raw_data
 FONT_GOOD = Font(name="Arial", size=11, color="006100")
 FONT_BAD = Font(name="Arial", size=11, color="9C0006")
 THIN = Side(style="thin", color="D9D9D9")
@@ -136,9 +106,203 @@ INT_FMT = "#,##0"
 PCT_FMT = "0.0%"
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 1. ĐỌC RAW DASHBOARD DOANH THU (gộp từ app "Phân tích Doanh thu khách hàng")
+#    Không còn cần file trung gian — app tự tính chỉ tiêu doanh thu từ đây.
+# ============================================================================
+
+RAW_COLS = {
+    "kpi": "KPI",
+    "doanh_thu": "Doanh thu",
+    "khach_moi": "Khách mới",
+    "mua_tt_km": "Mua TT KM",
+    "dt_khach_moi_all": "DT khách mới (all)",
+    "bill_tb_km": "Bill TB KM",
+    "dt_khach_moi_30d": "DT khách mới 30D",
+    "booking_moi": "Booking Mới",
+    "checkin_moi": "Checkin Mới",
+    "khach_thuc_te": "Khách thực tế",   # dạng "30838 (3434 / 1361 / 26043)"
+    "mua_tt_kc": "Mua TT KC",
+    "dt_khach_cu": "DT khách cũ",
+    "bill_tb_mua_kc": "Bill TB mua KC",
+}
+
+# (dòng gốc trong file Excel cũ, nhãn, loại, key trong RAW_COLS) — nhãn ở đây
+# khớp 1-1 với REVENUE_ROW_MAP ở trên, dùng để map trực tiếp.
+TEMPLATE_ROWS = [
+    (2, "KPI", "raw", "kpi"),
+    (3, "Tổng doanh thu", "raw", "doanh_thu"),
+    (4, "Khách mới", "raw", "khach_moi"),
+    (5, "Khách mua hàng TT (mới)", "raw", "mua_tt_km"),
+    (6, "Tỷ lệ chốt khách mới", "formula_moi", None),
+    (7, "Doanh thu khách mới", "raw", "dt_khach_moi_all"),
+    (8, "Bill TB khách mới", "raw", "bill_tb_km"),
+    (9, "Doanh thu khách mới 30 ngày", "raw", "dt_khach_moi_30d"),
+    (10, "Bill TB khách mới 30 ngày", "missing", None),
+    (11, "Khách booking mới", "raw", "booking_moi"),
+    (12, "Khách checkin mới", "raw", "checkin_moi"),
+    (13, "Khách thực tế (cũ)", "khach_cu", None),
+    (14, "Khách mua hàng TT (cũ)", "raw", "mua_tt_kc"),
+    (15, "Tỷ lệ chốt khách cũ", "formula_cu", None),
+    (16, "Doanh thu khách cũ", "raw", "dt_khach_cu"),
+    (17, "Bill TB khách cũ", "raw", "bill_tb_mua_kc"),
+]
+
+# Chi nhánh dùng KPI/doanh thu thật — loại các dòng hành chính không tính KPI
+EXCLUDE_BRANCHES = {"Học Viện LGS", "Văn Phòng"}
+
+
+def to_num(v):
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        vv = v.replace(",", "").replace("\xa0", "").strip()
+        try:
+            return float(vv)
+        except ValueError:
+            return None
+    return None
+
+
+def parse_khach_cu(v):
+    if v is None:
+        return None
+    nums = re.findall(r"-?\d+", str(v))
+    if len(nums) >= 4:
+        return int(nums[3])
+    return None
+
+
+def read_raw_dashboard(file):
+    """Trả về (title, {tên chi nhánh: {tên cột: giá trị}})."""
+    wb = openpyxl.load_workbook(file, data_only=True)
+    ws = wb.active
+
+    title = ws.cell(row=1, column=1).value or ""
+    header_row_idx = None
+    for r in range(1, 6):
+        cell = ws.cell(row=r, column=1).value
+        if cell and str(cell).strip() == "Chi nhánh":
+            header_row_idx = r
+            break
+    if header_row_idx is None:
+        raise ValueError("Không tìm thấy dòng tiêu đề 'Chi nhánh' trong file.")
+
+    headers = [c.value for c in ws[header_row_idx]]
+    data = {}
+    for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+        name = row[0]
+        if not name:
+            continue
+        data[str(name).strip()] = dict(zip(headers, row))
+    return title, data
+
+
+def detect_month(title: str, filename: str):
+    """Cố tìm ngày bắt đầu 'dd-mm-yyyy' trong tiêu đề hoặc tên file.
+    Trả về (year, month, ngay_bat_dau) hoặc (None, None, None) nếu không tìm được."""
+    text = f"{title} {filename}"
+    m = re.search(r"(\d{2})-(\d{2})-(\d{4})", text)
+    if m:
+        dd, mm, yyyy = m.groups()
+        try:
+            return int(yyyy), int(mm), date(int(yyyy), int(mm), int(dd))
+        except ValueError:
+            pass
+    return None, None, None
+
+
+def build_branch_values(branch_row: dict) -> dict:
+    """Trả về {row_idx (theo TEMPLATE_ROWS): giá trị} cho 1 chi nhánh."""
+    raw_vals = {k: branch_row.get(colname) for k, colname in RAW_COLS.items()}
+    out = {}
+    for row_idx, _label, kind, key in TEMPLATE_ROWS:
+        if kind == "raw":
+            out[row_idx] = to_num(raw_vals[key])
+        elif kind == "khach_cu":
+            out[row_idx] = parse_khach_cu(raw_vals["khach_thuc_te"])
+        else:
+            out[row_idx] = None
+    return out
+
+
+def sanity_check_single_month(label: str, raw_data: dict) -> list[str]:
+    """Cảnh báo KPI trùng nhau giữa các chi nhánh trong CÙNG 1 tháng — dấu
+    hiệu copy nhầm dòng trong raw dashboard."""
+    warnings = []
+    kpi_by_branch = {
+        b: to_num(v.get("KPI"))
+        for b, v in raw_data.items()
+        if b not in EXCLUDE_BRANCHES and b != "Tất cả chi nhánh" and to_num(v.get("KPI"))
+    }
+    seen = {}
+    for b, kpi in kpi_by_branch.items():
+        seen.setdefault(kpi, []).append(b)
+    for kpi, branches in seen.items():
+        if len(branches) > 1:
+            warnings.append(
+                f"⚠️ [{label}] KPI giống hệt nhau ({kpi:,.0f}) giữa: "
+                f"{', '.join(branches)} — khả năng copy nhầm dòng trong raw dashboard."
+            )
+    return warnings
+
+
+_LABEL_TO_FIELD = {v: k for k, v in REVENUE_ROW_MAP.items()}
+
+
+def build_revenue_entry_for_month(raw_data_for_month: dict) -> dict:
+    """raw_data_for_month: {chi nhánh: {tên cột raw: giá trị}} (từ
+    read_raw_dashboard, 1 tháng). Trả về {chi nhánh: {field: value}} theo
+    REVENUE_ROW_MAP — cấu trúc dùng thẳng cho bảng KTV-TVV bên dưới, không
+    qua file Excel trung gian nữa."""
+    out = {}
+    for branch, row in raw_data_for_month.items():
+        if branch in EXCLUDE_BRANCHES or branch == "Tất cả chi nhánh":
+            continue
+        computed = build_branch_values(row)  # {row_idx: value}
+        vals = {}
+        for row_idx, label, _kind, _key in TEMPLATE_ROWS:
+            field = _LABEL_TO_FIELD.get(label)
+            if field is None:
+                continue
+            vals[field] = computed.get(row_idx)
+        # 2 dòng này vốn là công thức Excel (=mua_tt/khach) trong file cũ —
+        # tính thẳng bằng Python vì giờ không xuất qua file trung gian nữa.
+        vals["ty_le_chot_moi"] = (
+            vals["mua_tt_moi"] / vals["khach_moi"]
+            if vals.get("khach_moi") else None
+        )
+        vals["ty_le_chot_cu"] = (
+            vals["mua_tt_cu"] / vals["khach_cu"]
+            if vals.get("khach_cu") else None
+        )
+        out[branch] = vals
+    return out
+
+
+def build_revenue_dict(months_raw: list[dict]):
+    """months_raw: [{'label': str, 'raw_data': {...}}, ...] đã sắp xếp theo
+    thời gian và đã xác nhận tên cột (tháng). Trả về:
+      revenue = {chi nhánh: {label: {field: value}}}
+      unmapped_branches = set các chi nhánh xuất hiện trong raw dashboard mà
+        chưa được cấu hình trong BRANCHES ở trên.
+    """
+    covered = {b["revenue_sheet"] for b in BRANCHES}
+    revenue = {}
+    unmapped_branches = set()
+    for m in months_raw:
+        entry = build_revenue_entry_for_month(m["raw_data"])
+        for branch, vals in entry.items():
+            if branch not in covered:
+                unmapped_branches.add(branch)
+            revenue.setdefault(branch, {})[m["label"]] = vals
+    return revenue, unmapped_branches
+
+
+# ============================================================================
 # 2. ĐỌC FILE PAYROLL — read_only + cache để nhanh
-# ---------------------------------------------------------------------------
+#    (đã bỏ hoàn toàn phần đọc/đối chiếu "raw_data" / sheet "Data tổng")
+# ============================================================================
 
 def find_header_columns(ws, header_map, search_rows=(2, 3, 4)):
     found = {}
@@ -163,61 +327,6 @@ def find_header_columns(ws, header_map, search_rows=(2, 3, 4)):
     return found
 
 
-def find_raw_data_columns(ws):
-    """Dò cột trong sheet 'Data tổng' (raw_data) theo danh sách biến thể tên
-    cột trong RAW_DATA_HEADERS. Trả về dict field -> số cột (1-indexed).
-    Không raise lỗi nếu thiếu — sheet raw_data là nguồn PHỤ (đối chiếu / dự
-    phòng), thiếu thì bỏ qua chứ không chặn app."""
-    found = {}
-    max_col = min(ws.max_column, RAW_DATA_MAX_COL)
-    for r in RAW_DATA_SEARCH_ROWS:
-        for c in range(1, max_col + 1):
-            val = ws.cell(row=r, column=c).value
-            if val is None:
-                continue
-            val_norm = str(val).strip()
-            for key, variants in RAW_DATA_HEADERS.items():
-                if key in found:
-                    continue
-                if val_norm in variants:
-                    found[key] = c
-    return found
-
-
-def read_raw_data_dashboard(wb):
-    """Đọc sheet 'Data tổng' (raw_data) trong workbook Payroll đã mở sẵn.
-    Trả về dict: {revenue_sheet_label: {kpi_doanh_thu, doanh_thu_truoc_thue,
-    doanh_thu_sau_thue, dt_khach_cu}}. Trả về {} nếu không có sheet này hoặc
-    không dò được cột — không làm app dừng lại."""
-    if RAW_DATA_SHEET_NAME not in wb.sheetnames:
-        return {}
-    ws = wb[RAW_DATA_SHEET_NAME]
-    cols = find_raw_data_columns(ws)
-    if "chi_nhanh" not in cols or "doanh_thu_truoc_thue" not in cols:
-        return {}
-
-    valid_labels = {b["revenue_sheet"] for b in BRANCHES}
-    idx_cn = cols["chi_nhanh"] - 1
-    dashboard = {}
-    max_row = min(ws.max_row, RAW_DATA_MAX_SCAN_ROWS)
-    for r in range(1, max_row + 1):
-        cn = ws.cell(row=r, column=cols["chi_nhanh"]).value
-        if not isinstance(cn, str):
-            continue
-        cn = cn.strip()
-        if cn not in valid_labels:
-            continue
-        entry = {}
-        for key in ("kpi_doanh_thu", "doanh_thu_truoc_thue", "doanh_thu_sau_thue", "dt_khach_cu"):
-            if key not in cols:
-                entry[key] = None
-                continue
-            v = ws.cell(row=r, column=cols[key]).value
-            entry[key] = v if isinstance(v, (int, float)) else None
-        dashboard[cn] = entry
-    return dashboard
-
-
 def detect_payroll_month(title: str, filename: str):
     text = f"{title} {filename}"
     m = re.search(r"THÁNG\s*(\d{1,2})\s*/\s*(\d{4})", text, re.IGNORECASE)
@@ -233,14 +342,10 @@ def detect_payroll_month(title: str, filename: str):
 
 @st.cache_data(show_spinner=False)
 def read_payroll_bytes(data: bytes, filename: str):
-    """Đọc sheet 'Bảng lương' ở chế độ read_only, ĐỒNG THỜI đọc luôn sheet
-    'Data tổng' (raw_data) nếu có. Trả về:
-      (year, month, label, {branch: stats}, unmapped_branches_set, employees,
-       raw_data_dashboard)
+    """Đọc sheet 'Bảng lương' ở chế độ read_only. Trả về:
+      (year, month, label, {branch: stats}, unmapped_branches_set, employees)
     employees = list các dict {chi_nhanh, ten, vi_tri, nhom, doanh_thu,
-    tour, thu_nhap, ty_le_kpi} — dùng để làm bảng xếp hạng top nhân viên.
-    raw_data_dashboard = {revenue_sheet_label: {...}} lấy từ sheet Data tổng,
-    dùng để đối chiếu / dự phòng cho Tổng doanh thu (xem đầu file)."""
+    tour, thu_nhap, ty_le_kpi} — dùng để làm bảng xếp hạng top nhân viên."""
     wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     if "Bảng lương" not in wb.sheetnames:
         raise ValueError(f"File '{filename}' không có sheet 'Bảng lương'.")
@@ -336,87 +441,12 @@ def read_payroll_bytes(data: bytes, filename: str):
                 "ty_le_kpi": kpi_rate if isinstance(kpi_rate, (int, float)) else None,
             })
 
-    raw_data_dashboard = read_raw_data_dashboard(wb)
-
-    return year, month, label, stats, unmapped_branches, employees, raw_data_dashboard
+    return year, month, label, stats, unmapped_branches, employees
 
 
-# ---------------------------------------------------------------------------
-# 3. ĐỌC FILE PHÂN TÍCH DOANH THU
-# ---------------------------------------------------------------------------
-
-REVENUE_ROW_MAP = {
-    "khach_moi": "Khách mới",
-    "dt_khach_moi": "Doanh thu khách mới",
-    "khach_cu": "Khách thực tế (cũ)",
-    "dt_khach_cu": "Doanh thu khách cũ",
-    "ty_le_chot_moi": "Tỷ lệ chốt khách mới",
-    "ty_le_chot_cu": "Tỷ lệ chốt khách cũ",
-    "bill_tb_moi": "Bill TB khách mới",
-    "bill_tb_cu": "Bill TB khách cũ",
-    "tong_doanh_thu": "Tổng doanh thu",
-    "mua_tt_moi": "Khách mua hàng TT (mới)",
-    "mua_tt_cu": "Khách mua hàng TT (cũ)",
-    "booking_moi": "Khách booking mới",
-    "checkin_moi": "Khách checkin mới",
-}
-
-
-def _to_num(v):
-    """Vài ô trong file Phân tích Doanh thu bị lưu dạng text có dấu phẩy /
-    khoảng trắng không ngắt (vd '5,129,349,000\\xa0') thay vì số — ép về số
-    để tránh lỗi cộng dồn ở phần tổng hợp 'TẤT CẢ CHI NHÁNH'."""
-    if v is None:
-        return None
-    if isinstance(v, (int, float)):
-        return v
-    if isinstance(v, str):
-        vv = v.replace(",", "").replace("\xa0", "").replace("%", "").strip()
-        if not vv:
-            return None
-        try:
-            return float(vv)
-        except ValueError:
-            return None
-    return v
-
-
-@st.cache_data(show_spinner=False)
-def read_revenue_bytes(data: bytes):
-    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-    out = {}
-    covered_sheets = {b["revenue_sheet"] for b in BRANCHES}
-    unmapped_sheets = set()
-    for sheet_name in wb.sheetnames:
-        if sheet_name == "Tất cả chi nhánh":
-            continue
-        if sheet_name not in covered_sheets:
-            unmapped_sheets.add(sheet_name)
-        ws = wb[sheet_name]
-        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
-        row_by_label = {}
-        for r in range(2, ws.max_row + 1):
-            chi_tieu = ws.cell(row=r, column=1).value
-            if not chi_tieu:
-                continue
-            row_by_label[str(chi_tieu).strip()] = r
-
-        month_data = {}
-        for c_idx, col_label in enumerate(headers[1:], start=2):
-            if not col_label:
-                continue
-            vals = {}
-            for field, vn_label in REVENUE_ROW_MAP.items():
-                r = row_by_label.get(vn_label)
-                vals[field] = _to_num(ws.cell(row=r, column=c_idx).value) if r else None
-            month_data[str(col_label).strip()] = vals
-        out[sheet_name] = month_data
-    return out, unmapped_sheets
-
-
-# ---------------------------------------------------------------------------
-# 4. TỔNG HỢP "TẤT CẢ CHI NHÁNH" (đúng trọng số, không phải trung bình cộng)
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 3. TỔNG HỢP "TẤT CẢ CHI NHÁNH" (đúng trọng số, không phải trung bình cộng)
+# ============================================================================
 
 def aggregate_payroll_total(stats_by_branch):
     keys_sum = ["so_nhan_su", "so_ktv", "dt_ktv", "tour_ktv", "thunhap_ktv_sum",
@@ -456,29 +486,9 @@ def aggregate_revenue_total(revenue, label):
     return out
 
 
-# --- MỚI: lấy giá trị doanh thu, có dự phòng bằng raw_data trong Payroll ---
-
-def get_revenue_field_with_fallback(revenue, raw_dashboard, revenue_sheet, month_label, field):
-    """Lấy `field` (chỉ áp dụng cho 'tong_doanh_thu' / 'dt_khach_cu') từ file
-    Phân tích Doanh thu; nếu thiếu (None) thì lấy tạm từ raw_data (sheet
-    'Data tổng' trong Payroll). Trả về (value, from_raw_data: bool)."""
-    d = revenue.get(revenue_sheet, {}).get(month_label, {})
-    v = d.get(field)
-    if v is not None:
-        return v, False
-    if not raw_dashboard:
-        return None, False
-    entry = raw_dashboard.get(revenue_sheet)
-    if not entry:
-        return None, False
-    raw_key = "doanh_thu_truoc_thue" if field == "tong_doanh_thu" else "dt_khach_cu"
-    v_raw = entry.get(raw_key)
-    return v_raw, v_raw is not None
-
-
-# ---------------------------------------------------------------------------
-# 5. LAYOUT CỘT — hỗ trợ N tháng bất kỳ
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 4. LAYOUT CỘT — hỗ trợ N tháng bất kỳ
+# ============================================================================
 
 def compute_branch_plan(start_col, n_months):
     plan = []
@@ -495,9 +505,7 @@ def compute_branch_plan(start_col, n_months):
     return plan, val_col, end_col
 
 
-def write_values(ws, row, label, plan, get_value_fn, number_format, bold=False, flag_fn=None):
-    """flag_fn(i) -> True nếu giá trị ở tháng thứ i là số LẤY TẠM từ raw_data
-    (dùng để tô màu riêng + ghi chú, khác với ô thật sự thiếu dữ liệu)."""
+def write_values(ws, row, label, plan, get_value_fn, number_format, bold=False):
     a = ws.cell(row=row, column=1, value=label)
     a.font = FONT_BOLD if bold else FONT
     a.border = BORDER
@@ -514,13 +522,6 @@ def write_values(ws, row, label, plan, get_value_fn, number_format, bold=False, 
         if val is None:
             cell.fill = FILL_INPUT
             cell.comment = Comment("Không có dữ liệu — kiểm tra lại file raw.", "App KTV-TVV")
-        elif flag_fn is not None and flag_fn(i):
-            cell.fill = FILL_RAWDATA
-            cell.comment = Comment(
-                "Số này đang LẤY TẠM từ raw_data (sheet 'Data tổng' trong file Payroll) "
-                "vì file Phân tích Doanh thu không có dữ liệu — nên xác nhận lại số chính thức.",
-                "App KTV-TVV",
-            )
 
 
 def write_formula_same_col(ws, row, label, plan, formula_fn, number_format, bold=False):
@@ -575,8 +576,8 @@ def apply_growth_colors(ws, row, cols, reverse=False):
         )
 
 
-def write_row(ws, row, label, plan, val_col, get_value_fn, diff_kind, number_format, bold=False, color=False, flag_fn=None):
-    write_values(ws, row, label, plan, get_value_fn, number_format, bold=bold, flag_fn=flag_fn)
+def write_row(ws, row, label, plan, val_col, get_value_fn, diff_kind, number_format, bold=False, color=False):
+    write_values(ws, row, label, plan, get_value_fn, number_format, bold=bold)
     write_diffs(ws, row, plan, val_col, diff_kind, "0.0%", color=color)
 
 
@@ -599,16 +600,15 @@ def section_label(ws, row, text):
     ws.cell(row=row, column=1).fill = FILL_SECTION
 
 
-# ---------------------------------------------------------------------------
-# 6. XÂY DỰNG SHEET "KTV-TVV"
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 5. XÂY DỰNG SHEET "KTV-TVV"
+# ============================================================================
 
 def build_ktv_tvv_sheet(wb, months, revenue):
-    """months: list các tuple (label, payroll_stats, raw_dashboard)."""
+    """months: list các tuple (label, payroll_stats)."""
     n = len(months)
     month_labels = [m[0] for m in months]
     payroll_by_month = [m[1] for m in months]
-    raw_dashboard_by_month = [m[2] for m in months]
     total_payroll_by_month = [aggregate_payroll_total(s) for s in payroll_by_month]
     total_revenue_by_month = [aggregate_revenue_total(revenue, lbl) for lbl in month_labels]
 
@@ -642,30 +642,6 @@ def build_ktv_tvv_sheet(wb, months, revenue):
         sheet_name = next(b["revenue_sheet"] for b in BRANCHES if b["label"] == label)
         d = revenue.get(sheet_name, {}).get(month_labels[month_idx], {})
         return d.get(field)
-
-    # --- MỚI: bản có dự phòng raw_data, chỉ dùng cho 2 field hỗ trợ được ---
-    def get_rev_fallback(label, month_idx, field, is_total):
-        """Trả về (value, from_raw). Cột TỔNG (is_total) KHÔNG áp dụng dự
-        phòng riêng lẻ — nó vẫn cộng từ số các chi nhánh (đã có fallback)."""
-        if is_total:
-            # cộng lại từ từng chi nhánh để cột Tổng cũng được hưởng fallback
-            total = 0.0
-            any_val = False
-            any_raw = False
-            for b in BRANCHES:
-                v, from_raw = get_revenue_field_with_fallback(
-                    revenue, raw_dashboard_by_month[month_idx], b["revenue_sheet"],
-                    month_labels[month_idx], field,
-                )
-                if v is not None:
-                    total += v
-                    any_val = True
-                    any_raw = any_raw or from_raw
-            return (total if any_val else None), any_raw
-        sheet_name = next(b["revenue_sheet"] for b in BRANCHES if b["label"] == label)
-        return get_revenue_field_with_fallback(
-            revenue, raw_dashboard_by_month[month_idx], sheet_name, month_labels[month_idx], field
-        )
 
     def get_pay(label, month_idx, field, is_total):
         if is_total:
@@ -707,21 +683,11 @@ def build_ktv_tvv_sheet(wb, months, revenue):
         (12, "Bill TB khách mới", "bill_tb_moi", "pct", MONEY_FMT, True),
         (13, "Bill TB khách cũ", "bill_tb_cu", "pct", MONEY_FMT, True),
     ]
-    # "dt_khach_cu" (dòng 9) là field có hỗ trợ dự phòng raw_data -> dùng
-    # get_rev_fallback + flag_fn; các field khác giữ nguyên get_rev như cũ.
     for row, label, field, kind, fmt, color in op_rows:
         for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
-            if field == "dt_khach_cu":
-                write_row(
-                    ws, row, label, plan, val_col,
-                    lambda i, bl=branch_label, t=is_total: get_rev_fallback(bl, i, "dt_khach_cu", t)[0],
-                    kind, fmt, color=color,
-                    flag_fn=lambda i, bl=branch_label, t=is_total: get_rev_fallback(bl, i, "dt_khach_cu", t)[1],
-                )
-            else:
-                write_row(ws, row, label, plan, val_col,
-                          lambda i, bl=branch_label, f=field, t=is_total: get_rev(bl, i, f, t),
-                          kind, fmt, color=color)
+            write_row(ws, row, label, plan, val_col,
+                      lambda i, bl=branch_label, f=field, t=is_total: get_rev(bl, i, f, t),
+                      kind, fmt, color=color)
 
     section_label(ws, 14, "BẢNG ĐÁNH GIÁ HIỆU SUẤT LÀM VIỆC CHI NHÁNH")
     for branch_label, (plan, val_col, start_col, end_col, is_total) in branch_plans.items():
@@ -773,13 +739,9 @@ def build_ktv_tvv_sheet(wb, months, revenue):
 
     section_label(ws, 32, "HIỆU QUẢ HOẠT ĐỘNG CHI NHÁNH")
     for branch_label, (plan, val_col, *_r, is_total) in branch_plans.items():
-        # "Tổng doanh thu" (dòng 33) cũng là field có hỗ trợ dự phòng raw_data
-        write_row(
-            ws, 33, "Tổng doanh thu", plan, val_col,
-            lambda i, bl=branch_label, t=is_total: get_rev_fallback(bl, i, "tong_doanh_thu", t)[0],
-            "pct", MONEY_FMT, color=True,
-            flag_fn=lambda i, bl=branch_label, t=is_total: get_rev_fallback(bl, i, "tong_doanh_thu", t)[1],
-        )
+        write_row(ws, 33, "Tổng doanh thu", plan, val_col,
+                  lambda i, bl=branch_label, t=is_total: get_rev(bl, i, "tong_doanh_thu", t),
+                  "pct", MONEY_FMT, color=True)
 
         ws.cell(row=34, column=1, value="Tăng trưởng doanh thu (%)").font = FONT
         ws.cell(row=34, column=1).border = BORDER
@@ -835,52 +797,32 @@ def build_ktv_tvv_sheet(wb, months, revenue):
     return ws
 
 
-def compute_audit_warnings(months, revenue, unmapped_branches, unmapped_sheets):
-    """months: list các tuple (label, payroll_stats, raw_dashboard)."""
+def compute_audit_warnings(months, revenue, unmapped_branches_payroll, unmapped_branches_revenue):
+    """months: list các tuple (label, payroll_stats)."""
     warnings = []
-    if unmapped_branches:
+    if unmapped_branches_payroll:
         warnings.append(
             "⚠ Payroll có chi nhánh CHƯA cấu hình trong app (dữ liệu chi nhánh này sẽ KHÔNG "
-            "xuất hiện trong sheet KTV-TVV): " + ", ".join(sorted(unmapped_branches))
+            "xuất hiện trong sheet KTV-TVV): " + ", ".join(sorted(unmapped_branches_payroll))
         )
-    if unmapped_sheets:
+    if unmapped_branches_revenue:
         warnings.append(
-            "⚠ File Phân tích Doanh thu có sheet chi nhánh CHƯA cấu hình trong app: "
-            + ", ".join(sorted(unmapped_sheets))
+            "⚠ Raw dashboard doanh thu có chi nhánh CHƯA cấu hình trong app: "
+            + ", ".join(sorted(unmapped_branches_revenue))
         )
 
     month_labels = [m[0] for m in months]
     payroll_by_month = [m[1] for m in months]
-    raw_dashboard_by_month = [m[2] for m in months]
 
     for b in BRANCHES:
-        for i, lbl in enumerate(month_labels):
+        for lbl in month_labels:
             d = revenue.get(b["revenue_sheet"], {}).get(lbl)
-            has_revenue_file_data = d and d.get("tong_doanh_thu") is not None
-            raw_entry = raw_dashboard_by_month[i].get(b["revenue_sheet"])
-            has_raw_data = raw_entry and raw_entry.get("doanh_thu_truoc_thue") is not None
+            has_revenue_data = d and d.get("tong_doanh_thu") is not None
+            if not has_revenue_data:
+                warnings.append(f"⚠ [{b['label']} - {lbl}] Không tìm thấy dữ liệu doanh thu tương ứng trong raw dashboard.")
 
-            if not has_revenue_file_data and not has_raw_data:
-                warnings.append(f"⚠ [{b['label']} - {lbl}] Không tìm thấy dữ liệu doanh thu tương ứng (kể cả trong raw_data Payroll).")
-            elif not has_revenue_file_data and has_raw_data:
-                warnings.append(
-                    f"🆘 [{b['label']} - {lbl}] File Phân tích Doanh thu thiếu 'Tổng doanh thu' — "
-                    f"đang DÙNG TẠM số từ raw_data (Data tổng) trong Payroll: "
-                    f"{raw_entry['doanh_thu_truoc_thue']:,.0f} đ. Đề nghị xác nhận lại số chính thức."
-                )
-            elif has_revenue_file_data and has_raw_data:
-                # --- MỚI: đối chiếu chéo Tổng doanh thu giữa 2 nguồn ---
-                rev_val = d.get("tong_doanh_thu")
-                raw_val = raw_entry["doanh_thu_truoc_thue"]
-                if raw_val:
-                    pct_diff = abs(rev_val - raw_val) / raw_val
-                    if pct_diff > RAW_DATA_MISMATCH_THRESHOLD:
-                        warnings.append(
-                            f"❗ [{b['label']} - {lbl}] Tổng doanh thu LỆCH giữa 2 nguồn: "
-                            f"file Phân tích Doanh thu = {rev_val:,.0f} đ, raw_data Payroll (Data tổng) = "
-                            f"{raw_val:,.0f} đ (lệch {pct_diff*100:.2f}%) — nên kiểm tra lại."
-                        )
-
+    for i, lbl in enumerate(month_labels):
+        for b in BRANCHES:
             s = payroll_by_month[i].get(b["payroll"])
             if not s:
                 warnings.append(f"⚠ [{b['label']} - {lbl}] Không có dữ liệu nhân sự trong Payroll tháng này.")
@@ -910,7 +852,7 @@ def compute_audit_warnings(months, revenue, unmapped_branches, unmapped_sheets):
     return warnings
 
 
-def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
+def build_audit_sheet(wb, months, revenue, unmapped_branches_payroll, unmapped_branches_revenue):
     ws = wb.create_sheet("Audit", 0)
     ws.column_dimensions["A"].width = 100
     ws["A1"] = "Báo cáo kiểm tra dữ liệu — tự động tạo lúc xuất file"
@@ -918,7 +860,7 @@ def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
     ws["A2"] = "Các tháng trong file: " + " → ".join(m[0] for m in months)
     ws["A2"].font = FONT
 
-    warnings = compute_audit_warnings(months, revenue, unmapped_branches, unmapped_sheets)
+    warnings = compute_audit_warnings(months, revenue, unmapped_branches_payroll, unmapped_branches_revenue)
 
     r = 4
     if warnings:
@@ -929,9 +871,7 @@ def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
             cell = ws[f"A{r}"]
             cell.value = w
             cell.font = FONT
-            if w.startswith("❗") or w.startswith("🆘"):
-                cell.fill = FILL_RAWDATA
-            elif w.startswith("⚠"):
+            if w.startswith("⚠"):
                 cell.fill = FILL_WARN
             else:
                 cell.fill = PatternFill("solid", fgColor="FCE4D6")
@@ -944,17 +884,14 @@ def build_audit_sheet(wb, months, revenue, unmapped_branches, unmapped_sheets):
     return ws
 
 
-# ---------------------------------------------------------------------------
-# 7. BẢNG DỮ LIỆU TỔNG HỢP (tidy dataframe) CHO DASHBOARD WEB
-#    Dùng chung nguồn số liệu với sheet Excel, nhưng ở dạng số Python thường
-#    (không phải công thức) để vẽ biểu đồ Plotly.
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 6. BẢNG DỮ LIỆU TỔNG HỢP (tidy dataframe) CHO DASHBOARD WEB
+# ============================================================================
 
 def compute_metrics_table(months, revenue):
-    """months: list các tuple (label, payroll_stats, raw_dashboard)."""
+    """months: list các tuple (label, payroll_stats)."""
     month_labels = [m[0] for m in months]
     payroll_by_month = [m[1] for m in months]
-    raw_dashboard_by_month = [m[2] for m in months]
 
     records = []
     for i, lbl in enumerate(month_labels):
@@ -966,13 +903,6 @@ def compute_metrics_table(months, revenue):
                       "ty_le_chot_moi", "ty_le_chot_cu", "bill_tb_moi", "bill_tb_cu",
                       "tong_doanh_thu"]:
                 rec[k] = d.get(k)
-            # Dashboard web dùng luôn fallback raw_data cho Tổng doanh thu để
-            # không bị hụt biểu đồ khi thiếu file doanh thu 1 vài chi nhánh.
-            tdt, tdt_from_raw = get_revenue_field_with_fallback(
-                revenue, raw_dashboard_by_month[i], b["revenue_sheet"], lbl, "tong_doanh_thu"
-            )
-            rec["tong_doanh_thu"] = tdt
-            rec["tong_doanh_thu_tu_raw"] = tdt_from_raw
             rec["so_nhan_su"] = s.get("so_nhan_su")
             rec["so_ktv"] = s.get("so_ktv")
             rec["so_tvv"] = s.get("so_tvv")
@@ -1015,13 +945,6 @@ def render_web_dashboard(df, month_labels):
         return
 
     st.header("📺 Dashboard trực quan")
-
-    if "tong_doanh_thu_tu_raw" in df.columns and df["tong_doanh_thu_tu_raw"].any():
-        n_raw = int(df["tong_doanh_thu_tu_raw"].sum())
-        st.caption(
-            f"🆘 {n_raw} ô 'Tổng doanh thu' đang lấy tạm từ raw_data (Data tổng) trong Payroll "
-            "vì thiếu trong file Phân tích Doanh thu — xem chi tiết ở sheet Audit khi xuất file."
-        )
 
     all_branches = [b["label"] for b in BRANCHES]
     fcol1, fcol2 = st.columns(2)
@@ -1169,54 +1092,107 @@ def render_web_dashboard(df, month_labels):
         )
 
 
-# ---------------------------------------------------------------------------
-# 8. UI
-# ---------------------------------------------------------------------------
+# ============================================================================
+# 7. UI
+# ============================================================================
 
 st.set_page_config(page_title="Báo cáo lương KTV-TVV", layout="wide")
-st.title("📊 Tự động tạo sheet KTV-TVV (Vận hành + Hiệu suất + Chi phí nhân sự)")
+st.title("📊 Tự động tạo sheet KTV-TVV — từ RAW DASHBOARD + Payroll")
 
 st.markdown(
     """
-Upload file **Phân tích Doanh thu khách hàng** và **bao nhiêu file Payroll cũng
-được** (mỗi file 1 tháng, sheet "Bảng lương") — app tự nhận diện tháng, tự sắp
-xếp theo thời gian và tự mở rộng bảng KTV-TVV theo đúng số tháng bạn upload.
-
-🆕 App giờ đọc thêm **raw_data** (sheet "Data tổng") có sẵn trong mỗi file
-Payroll để tự đối chiếu số Tổng doanh thu, và dùng làm dự phòng nếu file
-Phân tích Doanh thu bị thiếu dữ liệu 1 vài chi nhánh/tháng.
+Upload **raw dashboard doanh thu** (bao nhiêu file/tháng cũng được) và
+**file Payroll** (bao nhiêu file cũng được, mỗi file 1 tháng, sheet "Bảng
+lương"). App tự tính toàn bộ chỉ tiêu doanh thu trực tiếp từ raw dashboard
+(không cần file "Phân tích Doanh thu khách hàng" làm sẵn), tự nhận diện
+tháng, tự sắp xếp theo thời gian, và tự mở rộng bảng KTV-TVV theo đúng số
+tháng bạn upload.
 """
 )
 
-revenue_file = st.file_uploader("📈 File Phân tích Doanh thu khách hàng", type=["xlsx"])
-payroll_files = st.file_uploader(
-    "💰 File Payroll (chọn nhiều file cùng lúc, mỗi file 1 tháng)",
-    type=["xlsx"], accept_multiple_files=True,
+st.subheader("Bước 1 — Upload raw dashboard doanh thu (nhiều file, mỗi file 1 tháng)")
+raw_revenue_files = st.file_uploader(
+    "Raw dashboard doanh thu",
+    type=["xlsx"],
+    accept_multiple_files=True,
+    key="raw_revenue_files",
 )
 
-if revenue_file and payroll_files:
-    with st.spinner("Đang đọc file Phân tích Doanh thu..."):
-        try:
-            revenue, unmapped_sheets = read_revenue_bytes(revenue_file.getvalue())
-        except Exception as e:
-            st.error(f"Lỗi đọc file Phân tích Doanh thu: {e}")
-            st.stop()
+revenue = {}
+unmapped_branches_revenue = set()
+months_raw_confirmed = False
 
+if raw_revenue_files:
+    parsed_rev = []
+    for f in raw_revenue_files:
+        try:
+            title, raw_data = read_raw_dashboard(f)
+        except Exception as e:
+            st.error(f"Lỗi đọc file '{f.name}': {e}")
+            continue
+        year, month, start_date = detect_month(title, f.name)
+        default_label = f"T{month}" if month else f.name
+        parsed_rev.append({
+            "filename": f.name, "title": title, "raw_data": raw_data,
+            "year": year, "month": month, "start_date": start_date,
+            "default_label": default_label,
+        })
+
+    if parsed_rev:
+        st.caption(
+            "App tự đoán tên tháng từ tiêu đề file — sửa lại nếu cần (vd 2 file "
+            "cùng là 'T1' nhưng khác năm thì nên sửa thành 'T1/26', 'T1/27'...)."
+        )
+        parsed_rev.sort(key=lambda p: (p["start_date"] is None, p["start_date"]))
+
+        rev_labels = []
+        for i, p in enumerate(parsed_rev):
+            cols = st.columns([3, 2, 3])
+            cols[0].write(f"📄 {p['filename']}")
+            cols[1].write(p["title"][:40] + ("..." if len(p["title"]) > 40 else ""))
+            label = cols[2].text_input("Tên cột (tháng)", value=p["default_label"], key=f"rev_label_{i}")
+            rev_labels.append(label)
+
+        if len(set(rev_labels)) != len(rev_labels):
+            st.error("❌ Có 2 file raw dashboard đang trùng tên tháng — vui lòng sửa lại cho khác nhau.")
+        else:
+            months_raw = [{"label": rev_labels[i], "raw_data": p["raw_data"]} for i, p in enumerate(parsed_rev)]
+            months_raw_confirmed = True
+
+            sanity_warnings = []
+            for i, p in enumerate(parsed_rev):
+                sanity_warnings.extend(sanity_check_single_month(rev_labels[i], p["raw_data"]))
+            if sanity_warnings:
+                for w in sanity_warnings:
+                    st.warning(w)
+
+            revenue, unmapped_branches_revenue = build_revenue_dict(months_raw)
+else:
+    st.info("Vui lòng upload ít nhất 1 file raw dashboard doanh thu.")
+
+st.divider()
+st.subheader("Bước 2 — Upload file Payroll (nhiều file, mỗi file 1 tháng)")
+payroll_files = st.file_uploader(
+    "File Payroll",
+    type=["xlsx"], accept_multiple_files=True, key="payroll_files",
+)
+
+if months_raw_confirmed and payroll_files:
     parsed = []
-    unmapped_branches_all = set()
+    unmapped_branches_payroll = set()
     with st.spinner(f"Đang đọc {len(payroll_files)} file Payroll..."):
         for f in payroll_files:
             try:
-                year, month, label, stats, unmapped, employees, raw_dashboard = read_payroll_bytes(f.getvalue(), f.name)
+                year, month, label, stats, unmapped, employees = read_payroll_bytes(f.getvalue(), f.name)
             except Exception as e:
                 st.error(f"Lỗi đọc file '{f.name}': {e}")
                 continue
             if not label:
                 st.warning(f"Không tự nhận diện được tháng của file '{f.name}' — bỏ qua file này.")
                 continue
-            unmapped_branches_all |= unmapped
+            unmapped_branches_payroll |= unmapped
             parsed.append({"filename": f.name, "year": year, "month": month, "label": label,
-                            "stats": stats, "employees": employees, "raw_dashboard": raw_dashboard})
+                            "stats": stats, "employees": employees})
 
     if not parsed:
         st.stop()
@@ -1226,18 +1202,16 @@ if revenue_file and payroll_files:
     labels_seen = [p["label"] for p in parsed]
     dups = {l for l in labels_seen if labels_seen.count(l) > 1}
     if dups:
-        st.error(f"Có nhiều file cùng nhận diện là tháng {', '.join(dups)} — kiểm tra lại, mỗi tháng chỉ nên có 1 file.")
+        st.error(f"Có nhiều file Payroll cùng nhận diện là tháng {', '.join(dups)} — kiểm tra lại, mỗi tháng chỉ nên có 1 file.")
         st.stop()
 
-    st.success("Đã nhận diện: " + " → ".join(f"**{p['label']}** ({p['filename']})" for p in parsed))
-    if unmapped_branches_all:
-        st.warning("⚠️ Có chi nhánh trong Payroll chưa được cấu hình trong app: " + ", ".join(sorted(unmapped_branches_all)) + " — dữ liệu chi nhánh này sẽ bị bỏ qua. Xem chi tiết trong sheet Audit sau khi xuất.")
-    if unmapped_sheets:
-        st.warning("⚠️ File Doanh thu có sheet chi nhánh chưa cấu hình: " + ", ".join(sorted(unmapped_sheets)))
-    if not any(p["raw_dashboard"] for p in parsed):
-        st.info("ℹ️ Không tìm thấy sheet 'Data tổng' (raw_data) trong các file Payroll đã upload — bỏ qua bước đối chiếu/dự phòng raw_data.")
+    st.success("Đã nhận diện Payroll: " + " → ".join(f"**{p['label']}** ({p['filename']})" for p in parsed))
+    if unmapped_branches_payroll:
+        st.warning("⚠️ Có chi nhánh trong Payroll chưa được cấu hình trong app: " + ", ".join(sorted(unmapped_branches_payroll)) + " — dữ liệu chi nhánh này sẽ bị bỏ qua. Xem chi tiết trong sheet Audit sau khi xuất.")
+    if unmapped_branches_revenue:
+        st.warning("⚠️ Có chi nhánh trong raw dashboard doanh thu chưa được cấu hình trong app: " + ", ".join(sorted(unmapped_branches_revenue)))
 
-    months_arg = [(p["label"], p["stats"], p["raw_dashboard"]) for p in parsed]
+    months_arg = [(p["label"], p["stats"]) for p in parsed]
     metrics_df = compute_metrics_table(months_arg, revenue)
 
     st.divider()
@@ -1248,7 +1222,7 @@ if revenue_file and payroll_files:
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
         build_ktv_tvv_sheet(wb, months_arg, revenue)
-        build_audit_sheet(wb, months_arg, revenue, unmapped_branches_all, unmapped_sheets)
+        build_audit_sheet(wb, months_arg, revenue, unmapped_branches_payroll, unmapped_branches_revenue)
         wb.move_sheet("Audit", offset=-len(wb.sheetnames))
 
         out = io.BytesIO()
@@ -1262,5 +1236,5 @@ if revenue_file and payroll_files:
             file_name=f"KTV-TVV_{parsed[0]['label']}_{parsed[-1]['label']}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-else:
-    st.info("Vui lòng upload file Phân tích Doanh thu và ít nhất 1 file Payroll để bắt đầu.")
+elif months_raw_confirmed:
+    st.info("Vui lòng upload ít nhất 1 file Payroll để tiếp tục.")
