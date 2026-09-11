@@ -14,6 +14,12 @@ SO VỚI BẢN TRƯỚC:
      trong file Payroll — vì đó chỉ là giải pháp tạm khi chưa có số doanh thu
      chính thức; giờ doanh thu đã được tính trực tiếp từ raw dashboard nên
      không cần đối chiếu/dự phòng chéo với Payroll nữa.
+  🆕 THÊM sheet "BÁO CÁO LƯƠNG CN -{tháng}": báo cáo chi phí lương theo chi
+     nhánh, tính riêng cho nhóm KTV+TVV, so sánh tháng mới nhất với tháng
+     liền trước (Tổng doanh thu, Số lượng nhân sự KTV+TVV, Tổng chi phí
+     nhân sự KTV+TVV, Chi phí lương/Doanh thu, Lương bình quân/nhân sự,
+     Chỉ số ROI) + dòng Tăng trưởng, dùng đúng số liệu app đã tính sẵn
+     (không cần đọc thêm cột payroll mới).
 
 Cách chạy:
     pip install streamlit openpyxl pandas plotly
@@ -915,6 +921,176 @@ def build_ktv_tvv_sheet(wb, months, revenue):
     return ws
 
 
+# ============================================================================
+# 5b. XÂY DỰNG SHEET "BÁO CÁO LƯƠNG CN -{tháng}" (chi phí lương KTV+TVV)
+#     So sánh tháng mới nhất với tháng liền trước, theo từng chi nhánh.
+#     Dùng lại đúng số liệu app đã tính (thunhap_ktv_sum/tvv_sum, so_ktv/tvv,
+#     tong_doanh_thu) — KHÔNG đọc thêm cột payroll mới nào.
+# ============================================================================
+
+def _month_display(label: str) -> str:
+    """'T7' -> 'Tháng 07'; nếu không tách được số thì trả nguyên label."""
+    m = re.search(r"(\d+)", label)
+    if m:
+        return f"Tháng {int(m.group(1)):02d}"
+    return label
+
+
+def _get_ktv_tvv_stats(stats_by_branch: dict, payroll_name: str):
+    """Trả về (số lượng KTV+TVV, tổng thu nhập KTV+TVV) cho 1 chi nhánh."""
+    s = stats_by_branch.get(payroll_name)
+    if not s:
+        return 0, 0.0
+    n = (s.get("so_ktv", 0) or 0) + (s.get("so_tvv", 0) or 0)
+    cp = (s.get("thunhap_ktv_sum", 0.0) or 0.0) + (s.get("thunhap_tvv_sum", 0.0) or 0.0)
+    return n, cp
+
+
+def build_luong_cn_sheet(wb, months, revenue):
+    """months: list các tuple (label, payroll_stats), đã sắp xếp theo thời
+    gian. Chỉ tạo được khi có từ 2 tháng trở lên (so sánh tháng mới nhất với
+    tháng liền trước). Trả về worksheet, hoặc None nếu chưa đủ 2 tháng."""
+    if len(months) < 2:
+        return None
+
+    prev_label, prev_stats = months[-2]
+    cur_label, cur_stats = months[-1]
+    prev_disp = _month_display(prev_label)
+    cur_disp = _month_display(cur_label)
+
+    sheet_name = f"BÁO CÁO LƯƠNG CN -{cur_label}"[:31]
+    ws = wb.create_sheet(sheet_name)
+
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 14
+    for col in ("C", "D", "E", "F", "G", "H"):
+        ws.column_dimensions[col].width = 19
+
+    n_branches = len(BRANCHES)
+    title = (
+        f"BÁO CÁO CHI PHÍ LƯƠNG {n_branches} CHI NHÁNH (KTV+TVV) — "
+        f"{cur_disp} SO VỚI {prev_disp} CÙNG KỲ"
+    )
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    tcell = ws.cell(row=1, column=1, value=title)
+    tcell.font = FONT_BOLD
+    tcell.alignment = Alignment(horizontal="center")
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=2)
+    style_header(ws.cell(row=2, column=1), "CHI NHÁNH LÀM VIỆC")
+    headers = [
+        "TỔNG DOANH THU",
+        "SỐ LƯỢNG NHÂN SỰ\n(KTV+TVV)",
+        "TỔNG CHI PHÍ NHÂN SỰ\n(KTV+TVV)",
+        "CHI PHÍ LƯƠNG/\nDOANH THU",
+        "LƯƠNG BÌNH QUÂN/\nNHÂN SỰ",
+        "CHỈ SỐ ROI\n(DOANH THU/CHI PHÍ NHÂN SỰ)",
+    ]
+    for offset, h in enumerate(headers):
+        style_header(ws.cell(row=2, column=3 + offset), h)
+
+    def get_rev_val(sheet_name_rev, label):
+        return revenue.get(sheet_name_rev, {}).get(label, {}).get("tong_doanh_thu")
+
+    def write_data_row(rr, label_txt, rev_v, n_v, cp_v, bold=False):
+        f = FONT_BOLD if bold else FONT
+        b_cell = ws.cell(row=rr, column=2, value=label_txt)
+        b_cell.font = f; b_cell.border = BORDER; b_cell.alignment = Alignment(horizontal="center")
+
+        c_c = ws.cell(row=rr, column=3, value=rev_v)
+        c_c.number_format = MONEY_FMT; c_c.font = f; c_c.border = BORDER
+        c_c.alignment = Alignment(horizontal="center")
+
+        c_d = ws.cell(row=rr, column=4, value=n_v)
+        c_d.number_format = INT_FMT; c_d.font = f; c_d.border = BORDER
+        c_d.alignment = Alignment(horizontal="center")
+
+        c_e = ws.cell(row=rr, column=5, value=cp_v)
+        c_e.number_format = MONEY_FMT; c_e.font = f; c_e.border = BORDER
+        c_e.alignment = Alignment(horizontal="center")
+
+        L = rr
+        c_f = ws.cell(row=rr, column=6, value=f"=IFERROR(E{L}/C{L},0)")
+        c_f.number_format = "0.00%"; c_f.font = f; c_f.border = BORDER
+        c_f.alignment = Alignment(horizontal="center")
+
+        c_g = ws.cell(row=rr, column=7, value=f"=IFERROR(E{L}/D{L},0)")
+        c_g.number_format = MONEY_FMT; c_g.font = f; c_g.border = BORDER
+        c_g.alignment = Alignment(horizontal="center")
+
+        c_h = ws.cell(row=rr, column=8, value=f"=IFERROR(C{L}/E{L},0)")
+        c_h.number_format = "0.00"; c_h.font = f; c_h.border = BORDER
+        c_h.alignment = Alignment(horizontal="center")
+
+    def write_growth_row(rr, r_cur, r_prev, bold=False):
+        f = FONT_BOLD if bold else FONT
+        g_label = ws.cell(row=rr, column=2, value="Tăng trưởng")
+        g_label.font = f; g_label.border = BORDER; g_label.alignment = Alignment(horizontal="center")
+        for col_idx, col_letter in zip(range(3, 9), "CDEFGH"):
+            cell = ws.cell(
+                row=rr, column=col_idx,
+                value=f'=IFERROR(({col_letter}{r_cur}-{col_letter}{r_prev})/{col_letter}{r_prev},"")',
+            )
+            cell.number_format = "0.00%"; cell.font = f; cell.border = BORDER
+            cell.alignment = Alignment(horizontal="center")
+        # Tô xanh nếu doanh thu tăng / đỏ nếu giảm; ngược lại cho chi phí
+        apply_growth_colors(ws, rr, [3])
+        apply_growth_colors(ws, rr, [5], reverse=True)
+
+    row = 3
+    total_rev_cur = total_rev_prev = 0.0
+    total_n_cur = total_n_prev = 0
+    total_cp_cur = total_cp_prev = 0.0
+
+    for b in BRANCHES:
+        rev_cur = get_rev_val(b["revenue_sheet"], cur_label)
+        rev_prev = get_rev_val(b["revenue_sheet"], prev_label)
+        n_cur, cp_cur = _get_ktv_tvv_stats(cur_stats, b["payroll"])
+        n_prev, cp_prev = _get_ktv_tvv_stats(prev_stats, b["payroll"])
+
+        total_rev_cur += rev_cur or 0
+        total_rev_prev += rev_prev or 0
+        total_n_cur += n_cur
+        total_n_prev += n_prev
+        total_cp_cur += cp_cur
+        total_cp_prev += cp_prev
+
+        r_cur, r_prev, r_growth = row, row + 1, row + 2
+        ws.merge_cells(start_row=r_cur, start_column=1, end_row=r_growth, end_column=1)
+        a_cell = ws.cell(row=r_cur, column=1, value=b["label"])
+        a_cell.font = FONT_BOLD
+        a_cell.alignment = Alignment(horizontal="center", vertical="center")
+        a_cell.border = BORDER
+        for rr in (r_prev, r_growth):
+            ws.cell(row=rr, column=1).border = BORDER
+
+        write_data_row(r_cur, cur_disp, rev_cur, n_cur, cp_cur)
+        write_data_row(r_prev, prev_disp, rev_prev, n_prev, cp_prev)
+        write_growth_row(r_growth, r_cur, r_prev)
+
+        row += 3
+
+    # Dòng tổng "TẤT CẢ CHI NHÁNH"
+    t_cur, t_prev, t_growth = row, row + 1, row + 2
+    ws.merge_cells(start_row=t_cur, start_column=1, end_row=t_growth, end_column=1)
+    tot_cell = ws.cell(row=t_cur, column=1, value=TOTAL_LABEL)
+    tot_cell.font = FONT_BOLD
+    tot_cell.fill = FILL_SECTION
+    tot_cell.alignment = Alignment(horizontal="center", vertical="center")
+    tot_cell.border = BORDER
+    for rr in (t_prev, t_growth):
+        c = ws.cell(row=rr, column=1)
+        c.fill = FILL_SECTION
+        c.border = BORDER
+
+    write_data_row(t_cur, cur_disp, total_rev_cur, total_n_cur, total_cp_cur, bold=True)
+    write_data_row(t_prev, prev_disp, total_rev_prev, total_n_prev, total_cp_prev, bold=True)
+    write_growth_row(t_growth, t_cur, t_prev, bold=True)
+
+    ws.freeze_panes = "C3"
+    return ws
+
+
 def compute_audit_warnings(months, revenue, unmapped_branches_payroll, unmapped_branches_revenue):
     """months: list các tuple (label, payroll_stats)."""
     warnings = []
@@ -1224,7 +1400,9 @@ Upload **raw dashboard doanh thu** (bao nhiêu file/tháng cũng được) và
 lương"). App tự tính toàn bộ chỉ tiêu doanh thu trực tiếp từ raw dashboard
 (không cần file "Phân tích Doanh thu khách hàng" làm sẵn), tự nhận diện
 tháng, tự sắp xếp theo thời gian, và tự mở rộng bảng KTV-TVV theo đúng số
-tháng bạn upload.
+tháng bạn upload. File xuất ra gồm 3 sheet: **Audit**, **KTV-TVV**, và
+**BÁO CÁO LƯƠNG CN -{tháng}** (chi phí lương KTV+TVV, so với tháng liền
+trước).
 """
 )
 
@@ -1328,6 +1506,8 @@ if months_raw_confirmed and payroll_files:
         st.warning("⚠️ Có chi nhánh trong Payroll chưa được cấu hình trong app: " + ", ".join(sorted(unmapped_branches_payroll)) + " — dữ liệu chi nhánh này sẽ bị bỏ qua. Xem chi tiết trong sheet Audit sau khi xuất.")
     if unmapped_branches_revenue:
         st.warning("⚠️ Có chi nhánh trong raw dashboard doanh thu chưa được cấu hình trong app: " + ", ".join(sorted(unmapped_branches_revenue)))
+    if len(parsed) < 2:
+        st.info("ℹ️ Cần ít nhất 2 tháng Payroll để tạo sheet 'BÁO CÁO LƯƠNG CN' (so sánh tháng này với tháng trước).")
 
     months_arg = [(p["label"], p["stats"]) for p in parsed]
     metrics_df = compute_metrics_table(months_arg, revenue)
@@ -1340,6 +1520,7 @@ if months_raw_confirmed and payroll_files:
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
         build_ktv_tvv_sheet(wb, months_arg, revenue)
+        build_luong_cn_sheet(wb, months_arg, revenue)
         build_audit_sheet(wb, months_arg, revenue, unmapped_branches_payroll, unmapped_branches_revenue)
         wb.move_sheet("Audit", offset=-len(wb.sheetnames))
 
@@ -1347,7 +1528,7 @@ if months_raw_confirmed and payroll_files:
         wb.save(out)
         out.seek(0)
 
-        st.success("Đã tạo xong sheet KTV-TVV + sheet Audit!")
+        st.success("Đã tạo xong sheet KTV-TVV + BÁO CÁO LƯƠNG CN + sheet Audit!")
         st.download_button(
             "⬇️ Tải file KTV-TVV.xlsx",
             data=out,
